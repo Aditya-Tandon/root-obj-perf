@@ -5,27 +5,29 @@
     "matching_cone_size": 0.4,
     "gen": {
         "collection_name": "GenPart",
-        "pt_cut": 20.0,
+        "pt_cut": 25.0,
         "eta_cut": 2.4
     },
     "offline": {
         "collection_name": "Jet",
         "tagger_name": "btagPNetB",
-        "b_tag_cut": 0.1,
+        "cvb_tagger_name": "btagPNetCvB",
+        "b_tag_cut": 0.0,
         "charm_veto_cut": 1.0,
         "electron_veto_cut": 1.0,
         "muon_veto_cut": 1.0,
-        "pt_cut": 20.0,
+        "pt_cut": 25.0,
         "eta_cut": 2.4
     },
     "l1": {
         "collection_name": "L1puppiJetSC4NG",
-        "tagger_name": "bTagScore",
-        "b_tag_cut": 0.1,
+        "tagger_name": "b_v_udscg_score",
+        "cvb_tagger_name": "c_v_b_score",
+        "b_tag_cut": 0.0,
         "charm_veto_cut": 1.0,
         "electron_veto_cut": 1.0,
         "muon_veto_cut": 1.0,
-        "pt_cut": 20.0,
+        "pt_cut": 25.0,
         "eta_cut": 2.4
     }
 }
