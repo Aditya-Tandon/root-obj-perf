@@ -29,5 +29,12 @@
         "muon_veto_cut": 1.0,
         "pt_cut": 25.0,
         "eta_cut": 2.4
+    },
+    "l1ext": {
+        "collection_name": "L1puppiExtJetSC4",
+        "tagger_name": "btagScore",
+        "b_tag_cut": 0.0,
+        "pt_cut": 25.0,
+        "eta_cut": 2.4
     }
 }
