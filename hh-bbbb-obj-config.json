@@ -5,9 +5,10 @@
     "matching_cone_size": 0.4,
     "gen": {
         "collection_name": "GenPart",
-        "pt_cut": 25.0,
-        "eta_cut": 2.4
+        "pt_cut": 20.0,
+        "eta_cut": 2.3
     },
+    "load_masks_from_file": true,
     "offline": {
         "collection_name": "Jet",
         "tagger_name": "btagPNetB",
