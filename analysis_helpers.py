@@ -1,7 +1,7 @@
 import json
 import numpy as np
 import awkward as ak
-from sklearn.metrics import auc
+from sklearn.metrics import auc, roc_curve
 from scipy.optimize import linear_sum_assignment
 
 
@@ -34,7 +34,7 @@ def get_purity_mask(gen_particles, reco_objects, CONFIG=None):
 def get_purity_mask_one_one(gen_particles, reco_objects, CONFIG=None):
     """
     Mathes using 1-to-1 uniqueness without Hungarian Algorithm. 
-    Loops explicitly implemetned in the function.
+    Loops explicitly implemented in the function.
     """
 
     if CONFIG is None:
@@ -64,6 +64,35 @@ def get_purity_mask_one_one(gen_particles, reco_objects, CONFIG=None):
         is_matched_list_gen.append(used_gen_indices)
 
     return ak.Array(is_matched_list_gen), ak.Array(is_matched_list_reco)
+
+def get_purity_mask_cross_matched(gen_particles, reco_objects, CONFIG=None):
+
+    if CONFIG is None:
+        with open("hh-bbbb-obj-config.json", "r") as config_file:
+            CONFIG = json.load(config_file)
+    
+    dr_matrix_reco_major = reco_objects[:, :, None].vector.deltaR(gen_particles[:, None, :].vector)
+    # Find closest GEN quark for each RECO jet. Values are Gen Indices (or None if N_gen=0)
+    idx_closest_gen_for_reco = ak.argmin(dr_matrix_reco_major, axis=2) # events, n_reco
+    min_dr_reco_major = ak.fill_none(ak.min(dr_matrix_reco_major, axis=2), np.inf) # events, n_reco
+
+    dr_matrix_gen_major = gen_particles[:, :, None].vector.deltaR(reco_objects[:, None, :].vector)
+    # Find closest RECO jet for each GEN quark. Values are Reco Indices
+    idx_closest_reco_for_gen = ak.argmin(dr_matrix_gen_major, axis=2) # events, n_gen
+
+    # We are indexing (Events, N_gen) using indices of shape (Events, N_reco)
+    # If idx_closest_gen_for_reco is None (no Gen quarks), this returns None safely.
+    back_check_reco_idx = idx_closest_reco_for_gen[idx_closest_gen_for_reco]
+
+    reco_idxs = ak.local_index(reco_objects, axis=1)
+    # fill_none(-1) handles the cases where N_gen=0 (where back_check is None)
+    # so they don't crash the comparison against integer Reco IDs.
+    pure_cross_matched = (
+        (ak.fill_none(back_check_reco_idx, -1) == reco_idxs) & 
+        (min_dr_reco_major < CONFIG["matching_cone_size"])
+    )
+    
+    return pure_cross_matched
 
 def get_efficiency_mask_hungarian(gen_particles, reco_objects, CONFIG=None):
     """
@@ -160,29 +189,20 @@ def calculate_pur_eff_vs_variable(gen_particles, reco_objects, mask, variable, b
 
 def calculate_roc_points(reco_jets, is_pure_mask, tagger_name):
     """
-    Calculates efficiency and mistag points for a ROC curve.
-    Returns (mistag_points, efficiency_points, auc_score).
+    Calculates efficiency and mistag points for a ROC curve using the roc_curve function from sklearn.
+    Returns (mistag_points, efficiency_points, auc_score, thresholds).
     """
-    thresholds = np.linspace(min(0, ak.min(getattr(reco_jets, tagger_name))), max(1, ak.max(getattr(reco_jets, tagger_name))), 400)
-    eff_points, mistag_points = [], []
-
-    signal_jets = reco_jets[is_pure_mask]
-    mistag_jets = reco_jets[~is_pure_mask]
-
-    n_total_signal = ak.sum(ak.num(signal_jets))
-    n_total_mistag = ak.sum(ak.num(mistag_jets))
-
-    for cut in thresholds:
-        # Calculate Signal Efficiency
-        n_signal_passing = ak.sum(getattr(signal_jets, tagger_name) > cut)
-        eff = n_signal_passing / n_total_signal if n_total_signal > 0 else 0
-        
-        # Calculate Mistag Rate
-        n_mistag_passing = ak.sum(getattr(mistag_jets, tagger_name) > cut)
-        mistag_rate = n_mistag_passing / n_total_mistag if n_total_mistag > 0 else 0
-        
-        eff_points.append(eff)
-        mistag_points.append(mistag_rate)
-
-    auc_score = auc(mistag_points, eff_points)
-    return mistag_points, eff_points, auc_score, thresholds
+    sig_scores = ak.to_numpy(ak.flatten(getattr(reco_jets[is_pure_mask], tagger_name)))
+    sig_labels = np.ones_like(sig_scores)
+    
+    # Get Background scores (Truth = 0)
+    bkg_scores = ak.to_numpy(ak.flatten(getattr(reco_jets[~is_pure_mask], tagger_name)))
+    bkg_labels = np.zeros_like(bkg_scores)
+    
+    y_true = np.concatenate([sig_labels, bkg_labels])
+    y_scores = np.concatenate([sig_scores, bkg_scores])
+    fpr, tpr, thresholds = roc_curve(y_true, y_scores)
+    
+    auc_score = auc(fpr, tpr)
+    
+    return fpr, tpr, auc_score, thresholds
