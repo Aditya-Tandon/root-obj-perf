@@ -6,7 +6,7 @@ import vector
 
 ak.behavior.update(vector.backends.awkward.behavior)
 
-def load_and_prepare_data(file_pattern, tree_name, collections_to_load, max_events, CONFIG=None):
+def load_and_prepare_data(file_pattern, tree_name, collections_to_load, max_events, correct_pt=True, CONFIG=None):
     """
     Loads the ROOT file, restructures the flat branches into objects,
     and creates 4-vector representations.
@@ -54,39 +54,40 @@ def load_and_prepare_data(file_pattern, tree_name, collections_to_load, max_even
                 mass_field = ak.zeros_like(pt_field)
 
             # Apply pT Corrections if this is the offline jet
-            if prefix == CONFIG["offline"]["collection_name"]:
-                tagger_name = CONFIG["offline"]["tagger_name"]
-                print(f"Applying pT regression corrections to {prefix} {tagger_name}...")
-                if tagger_name.startswith("btagPNet"):
+            if correct_pt:
+                if prefix == CONFIG["offline"]["collection_name"]:
+                    tagger_name = CONFIG["offline"]["tagger_name"]
+                    print(f"Applying pT regression corrections to {prefix} {tagger_name}...")
+                    if tagger_name.startswith("btagPNet"):
+                        pt_corrected = (
+                            events[prefix].pt 
+                            * events[prefix].PNetRegPtRawCorr 
+                            * events[prefix].PNetRegPtRawCorrNeutrino
+                        )
+                    elif tagger_name.startswith("btagUParTAK4"):
+                        pt_corrected = (
+                            events[prefix].pt 
+                            * events[prefix].UParTAK4RegPtRawCorr 
+                            * events[prefix].UParTAK4RegPtRawCorrNeutrino
+                        )
+                    else:
+                        pt_corrected = events[prefix].pt  # No correction if unknown tagger
+                    
                     pt_corrected = (
                         events[prefix].pt 
                         * events[prefix].PNetRegPtRawCorr 
                         * events[prefix].PNetRegPtRawCorrNeutrino
                     )
-                elif tagger_name.startswith("btagUParTAK4"):
-                    pt_corrected = (
-                        events[prefix].pt 
-                        * events[prefix].UParTAK4RegPtRawCorr 
-                        * events[prefix].UParTAK4RegPtRawCorrNeutrino
-                    )
-                else:
-                    pt_corrected = events[prefix].pt  # No correction if unknown tagger
-                
-                pt_corrected = (
-                    events[prefix].pt 
-                    * events[prefix].PNetRegPtRawCorr 
-                    * events[prefix].PNetRegPtRawCorrNeutrino
-                )
-                # Scale mass by the same correction factor
-                correction_factor = ak.where(events[prefix].pt > 0, pt_corrected / events[prefix].pt, 1.0)
-                mass_field = mass_field * correction_factor
-                pt_field = pt_corrected
+                    # Scale mass by the same correction factor
+                    correction_factor = ak.where(events[prefix].pt > 0, pt_corrected / events[prefix].pt, 1.0)
+                    mass_field = mass_field * correction_factor
+                    pt_field = pt_corrected
 
-            elif prefix == CONFIG["l1"]["collection_name"] and "ptCorrection" in events[prefix].fields:
-                pt_corrected = events[prefix].pt * events[prefix].ptCorrection
-                correction_factor = ak.where(events[prefix].pt > 0, pt_corrected / events[prefix].pt, 1.0)
-                mass_field = mass_field * correction_factor
-                pt_field = pt_corrected
+                elif prefix == CONFIG["l1"]["collection_name"] and "ptCorrection" in events[prefix].fields:
+                    pt_corrected = events[prefix].pt * events[prefix].ptCorrection
+                    correction_factor = ak.where(events[prefix].pt > 0, pt_corrected / events[prefix].pt, 1.0)
+                    mass_field = mass_field * correction_factor
+                    pt_field = pt_corrected
 
             # getting the softmaxed scores for the next gen L1 jets
             if prefix == CONFIG["l1"]["collection_name"] and CONFIG["l1"]["collection_name"].endswith("NG"):
