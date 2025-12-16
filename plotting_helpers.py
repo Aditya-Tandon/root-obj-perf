@@ -72,7 +72,8 @@ def plot_roc_comparison(roc_results, working_point=None):
     plt.figure(figsize=(8, 8))
     
     for label, (mistag_pts, eff_pts, auc_score, _) in roc_results:
-        plt.plot( mistag_pts, eff_pts, 'o-', 
+        valid_mask = mistag_pts > 0
+        plt.plot( mistag_pts[valid_mask], eff_pts[valid_mask], 'o-', 
                  label=f'{label} (AUC = {auc_score:.3f})', 
                  markersize=2)
     
@@ -413,6 +414,8 @@ def plot_avg_attr_vs_var(reco_jets, is_signal_mask, attr, variable, bins, xlabel
     plt.title(title)
     plt.legend()
     plt.show()
+
+    return bin_centers, avg_signal_attr_per_var_bin, std_signal_attr_per_var_bin, avg_background_attr_per_var_bin, std_background_attr_per_var_bin
   
 def plot_resolution_vs_var(gen_var, resolution_values, bins, y_label, x_label, title):
     """
