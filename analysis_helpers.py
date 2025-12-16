@@ -206,3 +206,37 @@ def calculate_roc_points(reco_jets, is_pure_mask, tagger_name):
     auc_score = auc(fpr, tpr)
     
     return fpr, tpr, auc_score, thresholds
+
+def get_pure_jet_idxs_cross_matched(gen_particles, reco_objects, CONFIG=None):
+    """
+    Returns the indices of the matched reco_objects for each gen_particle using cross-matching.
+    
+    gen_particles: generated b-jets
+    reco_objects: reconstructed b-jets
+    CONFIG: Configuration dictionary
+    """
+    if CONFIG is None:
+        with open("hh-bbbb-obj-config.json", "r") as config_file:
+            CONFIG = json.load(config_file)
+    
+    gen_vec = gen_particles.vector[:, :, None]
+    reco_vec = reco_objects.vector[:, None, :]
+    
+    delta_r_matrix = gen_vec.deltaR(reco_vec)
+    # shape: (events, n_gen)
+    idx_closest_reco_to_gen = ak.argmin(delta_r_matrix, axis=2)
+    # shape: (events, n_reco)
+    idx_closest_gen_to_reco = ak.argmin(delta_r_matrix, axis=1)
+    # Get the index of the Gen particle that the closest Reco jet points to
+    back_check_idx = idx_closest_gen_to_reco[idx_closest_reco_to_gen]
+    # Create indices for comparison (0, 1, 2...)
+    gen_indices = ak.local_index(gen_particles, axis=1)
+    min_dr_values = ak.min(delta_r_matrix, axis=2)
+    is_mutual_match = (
+        (back_check_idx == gen_indices) & 
+        (min_dr_values < CONFIG["matching_cone_size"])
+    )
+    
+    matched_reco_indices = idx_closest_reco_to_gen[is_mutual_match]
+    
+    return matched_reco_indices
