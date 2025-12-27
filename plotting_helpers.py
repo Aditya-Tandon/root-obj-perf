@@ -63,7 +63,7 @@ def plot_kinematic_comparison(bins, variable, xlabel, title,
     if new_fig:
         plt.show()
 
-def plot_roc_comparison(roc_results, working_point=None):
+def plot_roc_comparison(roc_results, working_point=None, title=""):
     """
     Plots multiple ROC curves on the same axes.
     roc_results should be a list of tuples:
@@ -80,12 +80,14 @@ def plot_roc_comparison(roc_results, working_point=None):
     if working_point != None:
         plt.vlines(working_point, ymin=0, ymax=1, colors="black", linestyles="dashed", label=f"WP = {working_point*100}% Mistag rate")
 
+    if title == "":
+        title = "ROC Curve Comparison: Offline vs. L1 B-Tagging"
     plt.ylabel("B-Tagging Efficiency")
     plt.xlabel("Mistag Rate")
     plt.xscale('log') 
     plt.xlim(1e-4, 1.0) 
     plt.ylim(1e-4, 1.05)
-    plt.title("ROC Curve Comparison: Offline vs. L1 B-Tagging")
+    plt.title(title)
     plt.grid(True, linestyle='--', which='both', alpha=0.6)
     plt.legend(fontsize="small")
     plt.show()
