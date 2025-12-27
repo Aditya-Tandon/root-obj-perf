@@ -83,14 +83,14 @@ def load_and_prepare_data(file_pattern, tree_name, collections_to_load, max_even
                     mass_field = mass_field * correction_factor
                     pt_field = pt_corrected
 
-                elif prefix == CONFIG["l1"]["collection_name"] and "ptCorrection" in events[prefix].fields:
+                elif prefix == CONFIG["l1ng"]["collection_name"] and "ptCorrection" in events[prefix].fields:
                     pt_corrected = events[prefix].pt * events[prefix].ptCorrection
                     correction_factor = ak.where(events[prefix].pt > 0, pt_corrected / events[prefix].pt, 1.0)
                     mass_field = mass_field * correction_factor
                     pt_field = pt_corrected
 
             # getting the softmaxed scores for the next gen L1 jets
-            if prefix == CONFIG["l1"]["collection_name"] and CONFIG["l1"]["collection_name"].endswith("NG"):
+            if prefix == CONFIG["l1ng"]["collection_name"] and CONFIG["l1ng"]["collection_name"].endswith("NG"):
                 l1_tag_scores = {field: events[prefix][field] for field in events[prefix].fields if field.endswith("Score")}
                 for score in l1_tag_scores.keys():
                     events[prefix, score] = l1_tag_scores[score]

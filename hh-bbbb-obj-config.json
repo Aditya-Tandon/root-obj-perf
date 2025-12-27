@@ -20,11 +20,11 @@
         "pt_cut": 25.0,
         "eta_cut": 2.4
     },
-    "l1": {
+    "l1ng": {
         "collection_name": "L1puppiJetSC4NG",
         "tagger_name": "b_v_udscg_score",
         "cvb_tagger_name": "c_v_b_score",
-        "b_tag_cut": 0.0,
+        "b_tag_cut": 0.00459,
         "charm_veto_cut": 1.0,
         "electron_veto_cut": 1.0,
         "muon_veto_cut": 1.0,
