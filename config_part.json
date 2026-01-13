@@ -1,0 +1,25 @@
+{
+    "exp_name": "L1_ParticleTransformer_Baseline",
+    "data_path": "l1_training_data.npz",
+    "num_constituents": 30,
+    "input_dim": 8, 
+    
+    "model": {
+        "embed_dim": 128,
+        "num_heads": 8,
+        "num_layers": 8,
+        "num_cls_layers": 2,
+        "dropout": 0.1,
+        "num_classes": 1
+    },
+    
+    "training": {
+        "batch_size": 256,
+        "epochs": 30,
+        "lr": 1e-3,
+        "weight_decay": 1e-4,
+        "num_workers": 4,
+        "val_split": 0.2,
+        "use_amp": true
+    }
+}
