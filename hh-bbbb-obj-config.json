@@ -1,5 +1,5 @@
 {
-    "file_pattern": "/home/hep/at3722/root-obj-perf/data/hh4b/data_*.root",
+    "file_pattern": "/vols/cms/at3722/root-obj-perf/data/hh4b_puppi_pf/hh4b/data_*.root",
     "tree_name": "Events",
     "max_events": null,
     "matching_cone_size": 0.4,
@@ -35,6 +35,13 @@
         "collection_name": "L1puppiExtJetSC4",
         "tagger_name": "btagScore",
         "b_tag_cut": 0.37053,
+        "pt_cut": 25.0,
+        "eta_cut": 2.4
+    },
+    "l1barrelextpuppi": {
+        "collection_name": "L1BarrelExtPuppi",
+        "tagger_name": "btagScore",
+        "b_tag_cut": 0.0,
         "pt_cut": 25.0,
         "eta_cut": 2.4
     }
