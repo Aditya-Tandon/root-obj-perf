@@ -8,6 +8,7 @@ from sklearn.metrics import roc_auc_score
 import wandb
 import argparse
 from parT import ParticleTransformer  # Import the new model
+from parT_helpers import extract_wandb_run_id, get_model_ckpt
 
 
 # --- Dataset Class ---
@@ -43,8 +44,19 @@ def run_training(config_path):
     with open(config_path, "r") as f:
         cfg = json.load(f)
 
+    restart = cfg["training"]["restart"]
     # 2. Initialize WandB
-    wandb.init(project="L1-BTagging-ParT", config=cfg, name=cfg["exp_name"])
+    if restart:
+        run_id = run_id = extract_wandb_run_id(cfg["training"]["wandb_run_path"])
+    else:
+        run_id = None
+    wandb.init(
+        project="L1-BTagging-ParT",
+        config=cfg,
+        name=cfg["exp_name"],
+        id=run_id,
+        resume="allow",
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -80,6 +92,16 @@ def run_training(config_path):
         dropout=cfg["model"]["dropout"],
         num_classes=cfg["model"]["num_classes"],
     ).to(device)
+    print("Model loaded.")
+
+    if restart:
+        ckpt = get_model_ckpt(
+            run_id=run_id,
+            ckpt_name=cfg["training"]["ckpt_lo_load"],
+            wandb_dir=cfg["training"]["wandb_dir"],
+        )
+        model.load_state_dict(ckpt)
+        print("Model state dict loaded.")
 
     print(f"Model Parameters: {sum(p.numel() for p in model.parameters())}")
     wandb.watch(model, log="gradients")
@@ -90,20 +112,22 @@ def run_training(config_path):
         lr=cfg["training"]["lr"],
         weight_decay=cfg["training"]["weight_decay"],
     )
+    print("Optimiser initialised.")
 
-    # Cosine Annealing is standard for Transformers
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimiser, T_max=cfg["training"]["epochs"]
+        optimiser, T_max=cfg["training"]["epochs"] * 1.5
     )
     criterion = nn.BCEWithLogitsLoss()
 
-    # AMP Scaler for faster training
-    scaler = torch.cuda.amp.GradScaler(enabled=cfg["training"]["use_amp"])
+    # # AMP Scaler for faster training
+    # scaler = torch.amp.GradScaler(enabled=cfg["training"]["use_amp"])
 
     # --- Training Loop ---
     best_auc = 0.0
-
-    for epoch in range(cfg["training"]["epochs"]):
+    start_epoch = 0 if restart is False else cfg["training"]["last_epoch_in_prev_run"]
+    num_epochs = start_epoch + cfg["training"]["epochs"]
+    print(f"Starting training from epoch {start_epoch} for {num_epochs} epochs.")
+    for epoch in range(start_epoch, num_epochs):
         model.train()
         total_loss = 0
 
@@ -114,15 +138,14 @@ def run_training(config_path):
 
             optimiser.zero_grad()
 
-            with torch.cuda.amp.autocast(enabled=cfg["training"]["use_amp"]):
-                outputs = model(X_batch, particle_mask=mask_batch)
-                loss = criterion(outputs, y_batch)
+            outputs = model(X_batch, particle_mask=mask_batch)
+            loss = criterion(outputs, y_batch)
 
-            scaler.scale(loss).backward()
-            scaler.step(optimiser)
-            scaler.update()
+            loss.backward()
+            optimiser.step()
 
             total_loss += loss.item()
+        scheduler.step()
 
         avg_train_loss = total_loss / len(train_loader)
 
@@ -163,11 +186,18 @@ def run_training(config_path):
         if auc_score > best_auc:
             best_auc = auc_score
             torch.save(model.state_dict(), "best_part_model.pth")
+            torch.save(optimiser.state_dict(), "best_model_optim.pth")
             wandb.save("best_part_model.pth")
+            wandb.save("best_model_optim.pth")
 
         scheduler.step()
 
     print(f"Training Complete. Best AUC: {best_auc:.4f}")
+    print("Saving final model")
+    torch.save(model.state_dict(), "final_model.pth")
+    torch.save(optimiser.state_dict(), "final_model_optim.pth")
+    wandb.save("final_model.pth")
+    wandb.save("final_model_optim.pth")
     wandb.finish()
 
 
