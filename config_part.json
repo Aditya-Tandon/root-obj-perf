@@ -1,25 +1,30 @@
 {
     "exp_name": "L1_ParticleTransformer_Baseline",
     "data_path": "l1_training_data.npz",
-    "num_constituents": 30,
-    "input_dim": 8, 
+    "num_constituents": 16,
+    "input_dim": 17, 
     
     "model": {
         "embed_dim": 128,
         "num_heads": 8,
         "num_layers": 8,
         "num_cls_layers": 2,
-        "dropout": 0.1,
+        "dropout": 0.3,
         "num_classes": 1
     },
     
     "training": {
-        "batch_size": 256,
-        "epochs": 30,
+        "batch_size": 512,
+        "epochs": 250,
         "lr": 1e-3,
-        "weight_decay": 1e-4,
+        "weight_decay": 1e-3,
         "num_workers": 4,
         "val_split": 0.2,
-        "use_amp": true
+        "use_amp": false,
+        "restart": false,
+        "wandb_run_path": null,
+        "ckpt_lo_load": null,
+        "wandb_dir": "wandb",
+        "last_epoch_in_prev_run": 0
     }
 }
