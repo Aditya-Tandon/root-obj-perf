@@ -42,7 +42,18 @@
         "collection_name": "L1BarrelExtPuppi",
         "tagger_name": "btagScore",
         "b_tag_cut": 0.0,
-        "pt_cut": 25.0,
-        "eta_cut": 2.4
+        "pt_cut": 0.0,
+        "eta_cut": 2.4,
+        "jet_pt_cut": 25.0,
+        "jet_eta_cut": 2.4
+    },
+    "l1barrelextpf": {
+        "collection_name": "L1BarrelExtPf",
+        "tagger_name": "btagScore",
+        "b_tag_cut": 0.0,
+        "pt_cut": 0.0,
+        "eta_cut": 2.4,
+        "jet_pt_cut": 25.0,
+        "jet_eta_cut": 2.4
     }
 }
