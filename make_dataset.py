@@ -5,6 +5,7 @@ import argparse
 import numpy as np
 import awkward as ak
 import vector
+import fastjet
 
 from tqdm import tqdm
 from data_loading_helpers import (
@@ -20,20 +21,135 @@ ak.behavior.update(vector.backends.awkward.behavior)
 
 
 N_CONSTITUENTS = 16
+COLLECTION_KEY = "l1barrelextpuppi"
+
+
+def cluster_candidates(events, config, key, dist_param=0.4):
+    """
+    Clusters candidates using Anti-kt and recovers features via integer indices.
+    """
+    # 1. Get Candidates
+    collection_name = config[key]["collection_name"]
+    candidates = events[collection_name]
+
+    # Apply cuts
+    candidates = apply_custom_cuts(candidates, config, key, kinematic_only=True)
+
+    # 2. Prepare Inputs with 'user_index'
+    # FastJet ONLY preserves 'px', 'py', 'pz', 'E', and 'user_index'.
+    # We map the local index (0..N_particles) to 'user_index'.
+    fastjet_inputs = ak.zip(
+        {
+            "px": candidates.vector.px,
+            "py": candidates.vector.py,
+            "pz": candidates.vector.pz,
+            "E": candidates.vector.e,
+            "user_index": ak.local_index(
+                candidates, axis=1
+            ),  # CRITICAL: Must be named 'user_index'
+        },
+        with_name="Momentum4D",
+    )
+
+    # 3. Cluster
+    jet_def = fastjet.JetDefinition(fastjet.antikt_algorithm, dist_param)
+    cluster = fastjet.ClusterSequence(fastjet_inputs, jet_def)
+
+    # 4. Extract Jets with jet-level pT cut (separate from candidate-level cut)
+    min_jet_pt = config[key].get("jet_pt_cut", config[key].get("pt_cut", 25.0))
+    out_jets = cluster.inclusive_jets(min_pt=min_jet_pt)
+
+    # 5. Extract Constituents with Indices
+    # The output constituents will now contain the 'user_index' field we set earlier
+    out_constituents = cluster.constituents(min_pt=min_jet_pt)
+
+    # 6. Recover Full Objects using per-event indexing
+    # constituent_indices shape: (Events, Jets, Constituents)
+    # candidates shape: (Events, Particles)
+    # We need to index per-event, so we use ak.unflatten to handle the jagged structure
+    constituent_indices = out_constituents.user_index
+
+    # Approach: Process each event to recover constituents with full properties
+    # Using a cartesian-like approach: for each (event, jet, constituent), look up
+    # the original candidate from that event using the user_index
+
+    # Get the structure we need to restore
+    n_constituents_per_jet = ak.num(constituent_indices, axis=2)  # (events, jets)
+    n_jets_per_event = ak.num(constituent_indices, axis=1)  # (events,)
+
+    # Flatten indices to 2D: (events, all_constituents_in_event)
+    flat_indices = ak.flatten(
+        constituent_indices, axis=2
+    )  # (events, total_constituents)
+
+    # Index into candidates - this works because both have the same event axis
+    flat_recovered = candidates[
+        flat_indices
+    ]  # (events, total_constituents) with record fields
+
+    # Now we need to unflatten the inner axis back to (jets, constituents) structure
+    # Flatten n_constituents_per_jet to get counts per jet across all events
+    flat_counts = ak.flatten(n_constituents_per_jet)  # 1D: counts for each jet
+
+    # Flatten flat_recovered to (total_jets_across_all_events, total_constituents)
+    # But we need to group by jets first, so we flatten the event axis
+    all_constituents = ak.flatten(flat_recovered, axis=1)  # 1D array of records
+
+    # Unflatten to (total_jets, constituents_per_jet)
+    jets_constituents = ak.unflatten(all_constituents, flat_counts, axis=0)
+
+    # Unflatten to (events, jets, constituents)
+    recovered_constituents = ak.unflatten(jets_constituents, n_jets_per_event, axis=0)
+
+    # 7. Structure Output
+    # Create jet-level records with constituents stored as a nested list
+    # First, create the vector field at the jet level
+    jet_vectors = ak.zip(
+        {
+            "pt": out_jets.pt,
+            "eta": out_jets.eta,
+            "phi": out_jets.phi,
+            "mass": out_jets.mass,
+        },
+        with_name="Momentum4D",
+    )
+
+    # Create the basic jet structure without constituents first
+    jets_base = ak.zip(
+        {
+            "pt": out_jets.pt,
+            "eta": out_jets.eta,
+            "phi": out_jets.phi,
+            "mass": out_jets.mass,
+            "vector": jet_vectors,
+        },
+    )
+
+    # Add constituents as a field using ak.with_field
+    # This preserves the structure without broadcasting
+    jets_with_vector = ak.with_field(jets_base, recovered_constituents, "constituents")
+
+    return jets_with_vector
 
 
 def process_batch(
-    config, collections_to_load=None, n_constituents=N_CONSTITUENTS, min_constituents=1
+    config,
+    collections_to_load=None,
+    n_constituents=N_CONSTITUENTS,
+    min_constituents=1,
+    collection_key="l1barrelextpuppi",
+    cluster_using_fastjet=True,
+    cluster_dist_param=0.4,
 ):
 
     file_pattern = config["file_pattern"]
     tree_name = config["tree_name"]
     max_events = config["max_events"]
+
     if collections_to_load is None:
         collections_to_load = [
-            config["l1ng"]["collection_name"],  # Jets
-            "L1BarrelExtPuppi",  # Candidates
-            "GenPart",  # Labels
+            config[collection_key]["collection_name"],
+            "GenPart",
         ]
 
     events = load_and_prepare_data(
@@ -42,45 +158,67 @@ def process_batch(
         collections_to_load,
         max_events=max_events,
         correct_pt=False,
+        CONFIG=config,
     )
 
-    l1_col = config["l1ng"]["collection_name"]
-    l1_puppi_col = "L1BarrelExtPuppi"
-
+    # --- Labels ---
     gen_b = select_gen_b_quarks_from_higgs(events)
+    n_gen_b_before_cuts = ak.sum(ak.num(gen_b, axis=1))
     gen_b = apply_custom_cuts(gen_b, config, "gen", kinematic_only=True)
-
-    l1_jets = events[l1_col]
-    l1_jets = apply_custom_cuts(l1_jets, config, "l1ng", kinematic_only=True)
-    l1_jets = l1_jets[ak.argsort(l1_jets.pt, axis=1, ascending=False, stable=True)]
-    l1_puppi_cands = events[l1_puppi_col]
-    l1_puppi_cands = apply_custom_cuts(
-        l1_puppi_cands, config, "l1barrelextpuppi", kinematic_only=True
+    n_gen_b_after_cuts = ak.sum(ak.num(gen_b, axis=1))
+    print(
+        f"  Gen b-quarks: {n_gen_b_before_cuts} -> {n_gen_b_after_cuts} after pT/eta cuts"
     )
-    l1_puppi_cands = l1_puppi_cands[
-        ak.argsort(l1_puppi_cands.pt, axis=1, ascending=False, stable=True)
-    ]
 
-    l1_jet_vecs = l1_jets.vector[:, :, None]
-    l1_cand_vec = l1_puppi_cands.vector[:, None, :]
+    if cluster_using_fastjet:
+        # --- Reconstruction & Clustering using FastJet ---
+        print(f"Clustering {collection_key}...")
+        clustered_jets = cluster_candidates(
+            events, config, collection_key, dist_param=cluster_dist_param
+        )
+        n_clustered_jets = ak.sum(ak.num(clustered_jets, axis=1))
+        print(f"  Clustered jets (pT > 25 GeV, |eta| < 2.4): {n_clustered_jets}")
 
-    dR_matrix = l1_jet_vecs.deltaR(l1_cand_vec)
-    in_cone = dR_matrix < 0.4
+        # Sort jets by pT (descending)
+        sorted_indices = ak.argsort(clustered_jets.pt, axis=1, ascending=False)
+        l1_jets = clustered_jets[sorted_indices]
 
-    cands_indices = ak.local_index(l1_puppi_cands, axis=1)
-    indices_broadcast, mask_broadcast = ak.broadcast_arrays(
-        cands_indices[:, None, :], in_cone
-    )
-    cand_idxs_matched = indices_broadcast[mask_broadcast]
+        # Get constituents (already attached and recovered by helper)
+        matched_cands = l1_jets.constituents
 
-    cands_broadcast, mask_broadcast = ak.broadcast_arrays(
-        l1_puppi_cands[:, None, :], in_cone
-    )
-    matched_cands = cands_broadcast[mask_broadcast]
-    matched_pt_sorted_idxs = ak.argsort(
-        matched_cands.pt, axis=2, ascending=False, stable=True
-    )
-    matched_cands = matched_cands[matched_pt_sorted_idxs]
+        # Sort constituents by pT (standard for ParT inputs)
+        const_pt_sort = ak.argsort(matched_cands.pt, axis=2, ascending=False)
+        matched_cands = matched_cands[const_pt_sort]
+    else:
+        # --- Direct Matching without Clustering ---
+        l1_col = config["l1ng"]["collection_name"]
+        l1_puppi_col = "L1BarrelExtPuppi"
+
+        l1_jets = events[l1_col]
+        l1_jets = apply_custom_cuts(l1_jets, config, "l1ng", kinematic_only=True)
+        l1_jets = l1_jets[ak.argsort(l1_jets.pt, axis=1, ascending=False, stable=True)]
+        l1_puppi_cands = events[l1_puppi_col]
+        l1_puppi_cands = apply_custom_cuts(
+            l1_puppi_cands, config, "l1barrelextpuppi", kinematic_only=True
+        )
+        l1_puppi_cands = l1_puppi_cands[
+            ak.argsort(l1_puppi_cands.pt, axis=1, ascending=False, stable=True)
+        ]
+
+        l1_jet_vecs = l1_jets.vector[:, :, None]
+        l1_cand_vec = l1_puppi_cands.vector[:, None, :]
+
+        dR_matrix_l1_puppi = l1_jet_vecs.deltaR(l1_cand_vec)
+        in_cone = dR_matrix_l1_puppi < 0.4
+
+        cands_broadcast, mask_broadcast = ak.broadcast_arrays(
+            l1_puppi_cands[:, None, :], in_cone
+        )
+        matched_cands = cands_broadcast[mask_broadcast]
+        matched_pt_sorted_idxs = ak.argsort(
+            matched_cands.pt, axis=2, ascending=False, stable=True
+        )
+        matched_cands = matched_cands[matched_pt_sorted_idxs]
 
     j_pt = l1_jets.pt[:, :, None]
     j_eta = l1_jets.eta[:, :, None]
@@ -180,7 +318,7 @@ def process_batch(
 def generate_dataset(
     config_path,
     output_file="l1_training_data.npz",
-    data_dir="/vols/cms/at3722/root-obj-perf/data/hh4b_puppi_pf/hh4b",
+    data_dir="~/data/hh4b_puppi_pf/hh4b",
     collections_to_load=None,
     min_constituents=1,
 ):
@@ -213,7 +351,8 @@ def generate_dataset(
     if collections_to_load is None:
         collections_to_load = [
             config["l1ng"]["collection_name"],  # Jets
-            "L1BarrelExtPuppi",  # Candidates
+            config["l1barrelextpuppi"]["collection_name"],  # Candidates
+            config["l1barrelextpf"]["collection_name"],  # PF Candidates
             "GenPart",  # Labels
         ]
 
@@ -230,6 +369,7 @@ def generate_dataset(
             collections_to_load=collections_to_load,
             n_constituents=N_CONSTITUENTS,
             min_constituents=min_constituents,
+            collection_key=COLLECTION_KEY,
         )
 
         all_X.append(X_chunk)
@@ -263,7 +403,7 @@ if __name__ == "__main__":
     argparse.add_argument(
         "--output",
         type=str,
-        default="l1_training_data.npz",
+        default="l1_ak4_training_data.npz",
         help="Output NPZ file name.",
     )
     argparse.add_argument(
