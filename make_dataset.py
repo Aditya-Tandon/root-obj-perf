@@ -171,7 +171,6 @@ def process_batch(
     )
 
     if cluster_using_fastjet:
-        # --- Reconstruction & Clustering using FastJet ---
         print(f"Clustering {collection_key}...")
         clustered_jets = cluster_candidates(
             events, config, collection_key, dist_param=cluster_dist_param
@@ -190,7 +189,6 @@ def process_batch(
         const_pt_sort = ak.argsort(matched_cands.pt, axis=2, ascending=False)
         matched_cands = matched_cands[const_pt_sort]
     else:
-        # --- Direct Matching without Clustering ---
         l1_col = config["l1ng"]["collection_name"]
         l1_puppi_col = "L1BarrelExtPuppi"
 
@@ -351,8 +349,7 @@ def generate_dataset(
     if collections_to_load is None:
         collections_to_load = [
             config["l1ng"]["collection_name"],  # Jets
-            config["l1barrelextpuppi"]["collection_name"],  # Candidates
-            config["l1barrelextpf"]["collection_name"],  # PF Candidates
+            config[COLLECTION_KEY]["collection_name"],  # Candidates
             "GenPart",  # Labels
         ]
 
@@ -403,7 +400,7 @@ if __name__ == "__main__":
     argparse.add_argument(
         "--output",
         type=str,
-        default="l1_ak4_training_data.npz",
+        default="l1_training_data.npz",
         help="Output NPZ file name.",
     )
     argparse.add_argument(
