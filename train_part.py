@@ -10,6 +10,9 @@ import argparse
 from parT import ParticleTransformer  # Import the new model
 from parT_helpers import extract_wandb_run_id, get_model_ckpt
 
+torch.manual_seed(42)
+np.random.seed(42)
+
 
 # --- Dataset Class ---
 class L1JetDataset(Dataset):
@@ -73,6 +76,7 @@ def run_training(config_path):
         shuffle=True,
         num_workers=cfg["training"]["num_workers"],
         pin_memory=True,
+        persistent_workers=True,
     )
     val_loader = DataLoader(
         val_ds,
@@ -80,7 +84,9 @@ def run_training(config_path):
         shuffle=False,
         num_workers=cfg["training"]["num_workers"],
         pin_memory=True,
+        persistent_workers=True,
     )
+    print("Data loaders prepared.")
 
     # 4. Initialize Particle Transformer
     model = ParticleTransformer(
@@ -111,13 +117,19 @@ def run_training(config_path):
         model.parameters(),
         lr=cfg["training"]["lr"],
         weight_decay=cfg["training"]["weight_decay"],
+        eps=1e-10,
     )
     print("Optimiser initialised.")
 
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimiser, T_max=cfg["training"]["epochs"] * 1.5
     )
-    criterion = nn.BCEWithLogitsLoss()
+    pos_weight = (len(train_ds.dataset) - torch.sum(train_ds.dataset.y)) / torch.sum(
+        train_ds.dataset.y
+    )
+    pos_weight = torch.tensor(pos_weight).to(device)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    print(f"Criterion initialised with pos_weight: {pos_weight.item():.4f}")
 
     # # AMP Scaler for faster training
     # scaler = torch.amp.GradScaler(enabled=cfg["training"]["use_amp"])
