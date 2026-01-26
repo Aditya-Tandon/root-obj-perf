@@ -20,10 +20,6 @@ from analysis_helpers import get_purity_mask_cross_matched
 ak.behavior.update(vector.backends.awkward.behavior)
 
 
-N_CONSTITUENTS = 16
-COLLECTION_KEY = "l1barrelextpuppi"
-
-
 def cluster_candidates(events, config, key, dist_param=0.4):
     """
     Clusters candidates using Anti-kt and recovers features via integer indices.
@@ -135,7 +131,7 @@ def cluster_candidates(events, config, key, dist_param=0.4):
 def process_batch(
     config,
     collections_to_load=None,
-    n_constituents=N_CONSTITUENTS,
+    n_constituents=16,
     min_constituents=1,
     collection_key="l1barrelextpuppi",
     cluster_using_fastjet=True,
@@ -318,6 +314,8 @@ def generate_dataset(
     output_file="l1_training_data.npz",
     data_dir="~/data/hh4b_puppi_pf/hh4b",
     collections_to_load=None,
+    num_constituents=16,
+    collection_key="l1barrelextpuppi",
     min_constituents=1,
 ):
     """
@@ -349,7 +347,7 @@ def generate_dataset(
     if collections_to_load is None:
         collections_to_load = [
             config["l1ng"]["collection_name"],  # Jets
-            config[COLLECTION_KEY]["collection_name"],  # Candidates
+            config[collection_key]["collection_name"],  # Candidates
             "GenPart",  # Labels
         ]
 
@@ -364,9 +362,9 @@ def generate_dataset(
         X_chunk, y_chunk, mask_chunk = process_batch(
             config=config,
             collections_to_load=collections_to_load,
-            n_constituents=N_CONSTITUENTS,
+            n_constituents=num_constituents,
             min_constituents=min_constituents,
-            collection_key=COLLECTION_KEY,
+            collection_key=collection_key,
         )
 
         all_X.append(X_chunk)
@@ -400,7 +398,7 @@ if __name__ == "__main__":
     argparse.add_argument(
         "--output",
         type=str,
-        default="l1_training_data.npz",
+        default="data/l1_ak4_training_data.npz",
         help="Output NPZ file name.",
     )
     argparse.add_argument(
@@ -409,7 +407,24 @@ if __name__ == "__main__":
         default="data/hh4b_puppi_pf/hh4b",
         help="Directory containing ROOT files.",
     )
+    argparse.add_argument(
+        "--num_constituents",
+        type=int,
+        default=16,
+        help="Number of constituents per jet.",
+    )
+    argparse.add_argument(
+        "--collection_key",
+        type=str,
+        default="l1barrelextpuppi",
+        help="Key for the L1 candidate collection to use.",
+    )
     args = argparse.parse_args()
     generate_dataset(
-        config_path=args.config, output_file=args.output, data_dir=args.data_dir
+        config_path=args.config,
+        output_file=args.output,
+        data_dir=args.data_dir,
+        num_constituents=args.num_constituents,
+        collection_key=args.collection_key,
+        min_constituents=1,
     )
