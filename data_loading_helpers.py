@@ -87,8 +87,10 @@ def load_and_prepare_data(
                             * events[prefix].UParTAK4RegPtRawCorrNeutrino
                         )
                     else:
-                        pt_corrected = events[prefix].pt  # No correction if unknown tagger
-                    
+                        pt_corrected = events[
+                            prefix
+                        ].pt  # No correction if unknown tagger
+
                     pt_corrected = (
                         events[prefix].pt
                         * events[prefix].PNetRegPtRawCorr
@@ -184,7 +186,7 @@ def select_gen_b_quarks_from_higgs(events):
     return gen_b_quarks_from_H
 
 
-def apply_custom_cuts(reco_jets, config, key, kinematic_only=False):
+def apply_custom_cuts(reco_jets, config, key, kinematic_only=False, return_jets=True):
     """
     Apply custom cuts to a jet collection.
 
@@ -199,6 +201,9 @@ def apply_custom_cuts(reco_jets, config, key, kinematic_only=False):
     kinematic_only : bool
         If True, only apply kinematic cuts, i.e., pt and eta cuts
         If False, apply custom tagger cuts as well
+    return_jets : bool
+        If True, return the filtered jets.
+        If False, return the mask applied to the jets.
     """
     subcfg = config[key]
 
@@ -249,8 +254,11 @@ def apply_custom_cuts(reco_jets, config, key, kinematic_only=False):
             tag_mask = getattr(reco_jets, tagger_name) > b_tag_cut
             final_mask = final_mask & tag_mask
 
-    reco_jets = reco_jets[final_mask]
-    return reco_jets
+    if not return_jets:
+        return final_mask
+    else:
+        reco_jets = reco_jets[final_mask]
+        return reco_jets
 
 
 def one_hot_encode_l1_puppi(flat_ids, n_classes=5):
