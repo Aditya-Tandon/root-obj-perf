@@ -20,6 +20,73 @@ from analysis_helpers import get_purity_mask_cross_matched
 ak.behavior.update(vector.backends.awkward.behavior)
 
 
+def compute_kinematic_weights(
+    pt, eta, y, n_bins_pt=50, n_bins_eta=20, max_pt=500, clip_max=10.0
+):
+    """
+    Calculates weights to make Signal (y=1) kinematics match Background (y=0).
+    Weight = P(k|B) / P(k|S) applied to Signal events.
+    Background events get weight = 1.0.
+    """
+    # 1. Define Bins
+    # Use fixed ranges to ensure stability.
+    pt_bins = np.linspace(0, max_pt, n_bins_pt + 1)
+    eta_bins = np.linspace(-2.0, 2.0, n_bins_eta + 1)
+
+    # 2. Split Data
+    sig_mask = y == 1
+    bkg_mask = y == 0
+
+    pt_sig, eta_sig = pt[sig_mask], eta[sig_mask]
+    pt_bkg, eta_bkg = pt[bkg_mask], eta[bkg_mask]
+
+    # 3. Compute 2D Histograms (Probability Densities)
+    # density=True normalizes sum of integrals to 1
+    # Adding a tiny epsilon (1e-10) prevents division by zero
+    H_sig, _, _ = np.histogram2d(
+        pt_sig, eta_sig, bins=[pt_bins, eta_bins], density=True
+    )
+    H_bkg, _, _ = np.histogram2d(
+        pt_bkg, eta_bkg, bins=[pt_bins, eta_bins], density=True
+    )
+
+    H_sig = np.maximum(H_sig, 1e-10)
+    H_bkg = np.maximum(H_bkg, 1e-10)
+
+    # 4. Calculate Ratio Map: P(B) / P(S)
+    # This is the weight we need to apply to Signal to make it look like Bkg
+    ratio_map = np.divide(H_bkg, H_sig)
+
+    # 5. Map Weights back to individual events
+    # Find which bin each event falls into
+    # We clip indices to ensure they stay within the histogram bounds
+    pt_idx = np.searchsorted(pt_bins, pt) - 1
+    eta_idx = np.searchsorted(eta_bins, eta) - 1
+
+    pt_idx = np.clip(pt_idx, 0, n_bins_pt - 1)
+    eta_idx = np.clip(eta_idx, 0, n_bins_eta - 1)
+
+    # Lookup weights for all events
+    all_weights = ratio_map[pt_idx, eta_idx]
+
+    # 6. Apply Logic: Only reweight Signal
+    # If y=0 (Bkg), weight = 1.0
+    # If y=1 (Sig), weight = Ratio
+    final_weights = np.ones_like(y, dtype=np.float32)
+    final_weights[sig_mask] = all_weights[sig_mask]
+
+    # 7. Clip Weights
+    # If P(S) is very small in some bin, the weight becomes huge.
+    # This destabilises training. Clipping (e.g., at 10) is standard practice.
+    final_weights = np.clip(final_weights, 0.1, clip_max)
+
+    print(f"Weight Statistics (Signal only):")
+    print(f"  Mean: {np.mean(final_weights[sig_mask]):.3f}")
+    print(f"  Max:  {np.max(final_weights[sig_mask]):.3f}")
+
+    return final_weights
+
+
 def cluster_candidates(events, config, key, dist_param=0.4):
     """
     Clusters candidates using Anti-kt and recovers features via integer indices.
@@ -377,11 +444,35 @@ def generate_dataset(
     final_y = np.concatenate(all_y, axis=0)
     final_mask = np.concatenate(all_masks, axis=0)
 
+    final_4_vecs = vector.array(
+        {
+            "e": final_X[:, :, 0],
+            "px": final_X[:, :, 1],
+            "py": final_X[:, :, 2],
+            "pz": final_X[:, :, 3],
+        }
+    )
+    final_jet_4_vecs = final_4_vecs.sum(axis=1)
+    final_pt = final_jet_4_vecs.pt
+    final_eta = final_jet_4_vecs.eta
+
+    print("Computing kinematic weights...")
+    sample_weights = compute_kinematic_weights(final_pt, final_eta, final_y)
+
     print(f"Saving {final_X.shape} dataset to {output_file}...")
     print(f"  - Features shape: {final_X.shape}")
     print(f"  - Labels shape: {final_y.shape}")
     print(f"  - Particle mask shape: {final_mask.shape}")
-    np.savez_compressed(output_file, x=final_X, y=final_y, particle_mask=final_mask)
+    print(f"  - Sample weights shape: {sample_weights.shape}")
+    np.savez_compressed(
+        output_file,
+        x=final_X,
+        y=final_y,
+        mask=final_mask,
+        jet_pt=final_pt,
+        jet_eta=final_eta,
+        weights=sample_weights,
+    )
     print("Done.")
 
 
