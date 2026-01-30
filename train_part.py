@@ -229,8 +229,7 @@ def run_training(config_path):
     train_labels_tensor = torch.from_numpy(stratify_labels[train_indices]).float()
     num_neg = torch.sum(train_labels_tensor == 0)
     num_pos = torch.sum(train_labels_tensor == 1)
-    pos_weight = num_neg / num_pos
-    pos_weight = torch.tensor(pos_weight).to(device)
+    pos_weight = (num_neg / num_pos).clone().detach().to(device)
     # Use reduction='none' to apply per-sample kinematic weights
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
     print(f"Criterion initialised with pos_weight: {pos_weight.item():.4f}")
