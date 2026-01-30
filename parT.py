@@ -4,18 +4,26 @@ import torch.nn.functional as F
 
 
 def to_rapidity(x, eps=1e-8):
-    E = x[..., 0]
-    pz = x[..., 3]
-    rapidity = 0.5 * torch.log((E + pz + eps) / (E - pz + eps))
+    mass = x[..., 0]
+    pt = x[..., 1]
+    eta = x[..., 2]
+    rapidity = torch.log(
+        (
+            torch.sqrt(mass**2 + pt**2 * torch.cosh(eta) ** 2)
+            + pt * torch.sinh(eta)
+            + eps
+        )
+        / (torch.sqrt(mass**2 + pt**2) + eps)
+    )
     return rapidity
 
 
-def to_phi(x, eps=1e-8):
-    px = x[..., 1]
-    py = x[..., 2]
-    phi = torch.atan2(py, px + eps)
-    mask = (torch.abs(px) > eps) | (torch.abs(py) > eps)
-    return phi * mask.float()
+def to_energy(x, eps=1e-8):
+    mass = x[..., 0]
+    pt = x[..., 1]
+    eta = x[..., 2]
+    energy = torch.sqrt(mass**2 + pt**2 * torch.cosh(eta) ** 2 + eps)
+    return energy
 
 
 def to_pt(x, eps=1e-8):
@@ -49,9 +57,9 @@ class PairwiseEmbedding(nn.Module):
             particle_mask = x[..., 0] != 0  # (B, N)
         # Get physical quantities
         r = to_rapidity(x).unsqueeze(2)
-        phi = to_phi(x).unsqueeze(2)
-        pt = to_pt(x).unsqueeze(2)
-        E = x[..., 0].unsqueeze(2)
+        phi = x[..., 3].unsqueeze(2)
+        pt = x[..., 1].unsqueeze(2)
+        E = to_energy(x).unsqueeze(2)
 
         delta = torch.sqrt(
             (r - r.transpose(1, 2)) ** 2 + (phi - phi.transpose(1, 2)) ** 2 + 1e-8

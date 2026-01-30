@@ -290,10 +290,10 @@ def process_batch(
     m_phi = matched_cands.phi
 
     # 1. 4-vec
-    m_e = matched_cands.vector.e
-    m_px = matched_cands.vector.px
-    m_py = matched_cands.vector.py
-    m_pz = matched_cands.vector.pz
+    m_pt = matched_cands.vector.pt
+    m_eta = matched_cands.vector.eta
+    m_phi = matched_cands.vector.phi
+    m_mass = matched_cands.vector.mass
 
     # 5. impact parameter dxy and z0
     m_dxy = matched_cands.dxy
@@ -324,10 +324,10 @@ def process_batch(
         return ak.fill_none(ak.pad_none(arr, target, axis=2, clip=True), 0.0)
 
     feature_list = [
-        pad_and_fill(m_e),
-        pad_and_fill(m_px),
-        pad_and_fill(m_py),
-        pad_and_fill(m_pz),
+        pad_and_fill(m_mass),
+        pad_and_fill(m_pt),
+        pad_and_fill(m_eta),
+        pad_and_fill(m_phi),
         pad_and_fill(m_dxy),
         pad_and_fill(m_z0),
         pad_and_fill(m_charge),
@@ -446,10 +446,10 @@ def generate_dataset(
 
     final_4_vecs = vector.array(
         {
-            "e": final_X[:, :, 0],
-            "px": final_X[:, :, 1],
-            "py": final_X[:, :, 2],
-            "pz": final_X[:, :, 3],
+            "mass": final_X[:, :, 0],
+            "pt": final_X[:, :, 1],
+            "eta": final_X[:, :, 2],
+            "phi": final_X[:, :, 3],
         }
     )
     final_jet_4_vecs = final_4_vecs.sum(axis=1)
