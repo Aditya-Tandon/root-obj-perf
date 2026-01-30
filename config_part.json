@@ -1,6 +1,6 @@
 {
-    "exp_name": "L1_ParticleTransformer_Baseline",
-    "data_path": "l1_training_data.npz",
+    "exp_name": "weighted_ptetaphi_PUPPI",
+    "data_path": "data/l1_ak4_weighted_ptetaphi_training_data.npz",
     "num_constituents": 16,
     "input_dim": 17, 
     
@@ -8,23 +8,37 @@
         "embed_dim": 128,
         "num_heads": 8,
         "num_layers": 8,
-        "num_cls_layers": 2,
+        "num_cls_layers": 3,
         "dropout": 0.3,
         "num_classes": 1
     },
-    
     "training": {
         "batch_size": 512,
-        "epochs": 250,
-        "lr": 1e-3,
-        "weight_decay": 1e-3,
+        "epochs": 200,
         "num_workers": 4,
-        "val_split": 0.2,
+        "val_split": 0.3,
         "use_amp": false,
         "restart": false,
         "wandb_run_path": null,
-        "ckpt_lo_load": null,
+        "ckpt_to_load": null,
         "wandb_dir": "wandb",
-        "last_epoch_in_prev_run": 0
+        "last_epoch_in_prev_run": 0,
+        "log_freq": 10,
+        "optimiser": {
+            "lr": 5e-4,
+            "weight_decay": 1e-3
+        },
+        "scheduler": {
+            "warmup_epochs": 5,
+            "total_epochs": 100,
+            "min_lr": 1e-6,
+            "red_fac": 0.5
+        }
+    },
+    "wandb":{
+        "entity": "adityatandon29",
+        "project": "L1-BTagging-ParT",
+        "artifact_name": "periodic_model",
+        "ckpt_type": "v296"
     }
 }

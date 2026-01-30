@@ -12,6 +12,8 @@ import argparse
 from parT import ParticleTransformer  # Import the new model
 from parT_helpers import extract_wandb_run_id, get_model_ckpt
 
+from warmup_cosine_lr import WarmupCosineSchedulerWithRestarts
+
 torch.manual_seed(42)
 np.random.seed(42)
 
@@ -26,17 +28,19 @@ class L1JetDataset(Dataset):
         self.y = torch.from_numpy(data["y"]).float().unsqueeze(1)
 
         # Load particle mask if available, otherwise infer from non-zero energy
-        if "particle_mask" in data.files:
-            self.mask = torch.from_numpy(data["particle_mask"]).bool()
-            print("Loaded particle mask from dataset")
+        if "mask" in data.files:
+            self.mask = torch.from_numpy(data["mask"]).bool()
+            print("Loaded particle mask from dataset.")
         else:
             # Fallback: infer mask from non-zero particles (E != 0)
             self.mask = self.X[..., 0] != 0
             print("No particle_mask in dataset, inferring from non-zero energy")
 
         if "weights" in data.files:
+            print("Loaded weights from dataset.")
             self.weights = torch.from_numpy(data["weights"]).float().unsqueeze(1)
         else:
+            print("No weights in dataset, using uniform weights of 1.0")
             self.weights = torch.ones_like(self.y)
 
         print(f"Data loaded: {self.X.shape} samples")
@@ -176,8 +180,8 @@ def run_training(config_path):
     # 5. Optimiser & Scheduler
     optimiser = optim.AdamW(
         model.parameters(),
-        lr=cfg["training"]["lr"],
-        weight_decay=cfg["training"]["weight_decay"],
+        lr=cfg["training"]["optimiser"]["lr"],
+        weight_decay=cfg["training"]["optimiser"]["weight_decay"],
         eps=1e-10,
     )
     print("Optimiser initialised.")
@@ -204,20 +208,23 @@ def run_training(config_path):
             print(
                 f"Artifact directory {artifact_dir} does not exist. Skipping loading from artifact."
             )
-        ckpt = get_model_ckpt(
-            run_id=run_id,
-            ckpt_name=cfg["training"]["ckpt_lo_load"],
-            wandb_dir=cfg["training"]["wandb_dir"],
-        )
-        model.load_state_dict(ckpt)
         print("Model state dict loaded.")
 
     print(f"Model Parameters: {sum(p.numel() for p in model.parameters())}")
     wandb.watch(model, log="gradients")
 
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimiser, T_max=cfg["training"]["epochs"] * 1.5
+    scheduler = WarmupCosineSchedulerWithRestarts(
+        optimiser,
+        warmup_epochs=cfg["training"]["scheduler"]["warmup_epochs"],
+        total_epochs=cfg["training"]["scheduler"]["total_epochs"],
+        min_lr=cfg["training"]["scheduler"]["min_lr"],
+        red_fac=cfg["training"]["scheduler"]["red_fac"],
+        last_epoch=cfg["training"]["last_epoch_in_prev_run"] if restart else -1,
     )
+    # scheduler = optim.lr_scheduler.CosineAnnealingLR(
+    #     optimiser, T_max=cfg["training"]["epochs"] * 1.5
+    # )
+
     # Calculate pos_weight from training subset labels
     train_labels_tensor = torch.from_numpy(stratify_labels[train_indices]).float()
     num_neg = torch.sum(train_labels_tensor == 0)
@@ -257,6 +264,8 @@ def run_training(config_path):
             loss = weighted_loss.mean()
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             optimiser.step()
 
             total_loss += loss.item()
@@ -290,7 +299,6 @@ def run_training(config_path):
         avg_val_loss = val_loss / len(val_loader)
         auc_score = roc_auc_score(np.concatenate(all_labels), np.concatenate(all_preds))
 
-        scheduler.step()
         # Logging
         print(
             f"Epoch {epoch+1} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val AUC: {auc_score:.4f}"
