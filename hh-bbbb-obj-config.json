@@ -1,5 +1,5 @@
 {
-    "file_pattern": "/vols/cms/at3722/root-obj-perf/data/hh4b_puppi_pf/hh4b/data_*.root",
+    "file_pattern": "/rds/general/user/at3722/home/root-obj-perf/data/hh4b_puppi_pf/hh4b/data_*.root",
     "tree_name": "Events",
     "max_events": null,
     "matching_cone_size": 0.4,
@@ -47,8 +47,26 @@
         "jet_pt_cut": 25.0,
         "jet_eta_cut": 2.4
     },
+    "l1extpuppi": {
+        "collection_name": "L1ExtPuppi",
+        "tagger_name": "btagScore",
+        "b_tag_cut": 0.0,
+        "pt_cut": 0.0,
+        "eta_cut": 2.4,
+        "jet_pt_cut": 25.0,
+        "jet_eta_cut": 2.4
+    },
     "l1barrelextpf": {
         "collection_name": "L1BarrelExtPf",
+        "tagger_name": "btagScore",
+        "b_tag_cut": 0.0,
+        "pt_cut": 0.0,
+        "eta_cut": 2.4,
+        "jet_pt_cut": 25.0,
+        "jet_eta_cut": 2.4
+    },
+    "l1extpf": {
+        "collection_name": "L1ExtPf",
         "tagger_name": "btagScore",
         "b_tag_cut": 0.0,
         "pt_cut": 0.0,
