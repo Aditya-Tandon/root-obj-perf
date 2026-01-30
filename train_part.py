@@ -323,30 +323,41 @@ def run_training(config_path):
                     "val_loss": val_metrics["val_loss"],
                     "val_auc": val_metrics["val_auc"],
                 },
-                "best_part_model.pth",
+                f"best_part_model_{wandb.run.id}.pth",
             )
             print(f"New best model saved with AUC: {best_auc:.4f}")
-        torch.save(
-            {
-                "config": cfg,
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimiser_state_dict": optimiser.state_dict(),
-                "scheduler_state_dict": scheduler.state_dict(),
-                "val_loss": val_metrics["val_loss"],
-                "val_auc": val_metrics["val_auc"],
-            },
-            f"part_model_epoch_{epoch+1}.pth",
-        )
+            best_artifact = wandb.Artifact(
+                "best_model",
+                type="model",
+                description=f"Best model with AUC: {best_auc:.4f}",
+                metadata={"epoch": epoch + 1, "val_auc": best_auc, "config": cfg},
+            )
+            best_artifact.add_file(f"best_part_model_{wandb.run.id}.pth")
+            wandb.log_artifact(best_artifact, aliases=["best"])
 
-        periodic_artifact = wandb.Artifact(
-            "periodic_model",
-            type="model",
-            description=f"Model checkpoint at epoch {epoch+1} with AUC: {auc_score:.4f}",
-            metadata={"epoch": epoch + 1, "val_auc": auc_score, "config": cfg},
-        )
-        periodic_artifact.add_file(f"part_model_epoch_{epoch+1}.pth")
-        wandb.log_artifact(periodic_artifact, aliases=[f"epoch_{epoch+1}"])
+        if (epoch + 1) % cfg["training"]["log_freq"] == 0:
+            print(f"Saving periodic model at epoch {epoch+1}")
+            torch.save(
+                {
+                    "config": cfg,
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimiser_state_dict": optimiser.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "val_loss": val_metrics["val_loss"],
+                    "val_auc": val_metrics["val_auc"],
+                },
+                f"part_model_{wandb.run.id}_epoch_{epoch+1}.pth",
+            )
+
+            periodic_artifact = wandb.Artifact(
+                "periodic_model",
+                type="model",
+                description=f"Model checkpoint at epoch {epoch+1} with AUC: {auc_score:.4f}",
+                metadata={"epoch": epoch + 1, "val_auc": auc_score, "config": cfg},
+            )
+            periodic_artifact.add_file(f"part_model_{wandb.run.id}_epoch_{epoch+1}.pth")
+            wandb.log_artifact(periodic_artifact, aliases=[f"epoch_{epoch+1}"])
 
     print(f"Training Complete. Best AUC: {best_auc:.4f}")
     print("Saving final model")
@@ -361,7 +372,7 @@ def run_training(config_path):
             "val_loss": val_metrics["val_loss"],
             "val_auc": val_metrics["val_auc"],
         },
-        f"final_model.pth",
+        f"final_model_{wandb.run.id}.pth",
     )
     final_artifact = wandb.Artifact(
         "final_model",
@@ -369,7 +380,7 @@ def run_training(config_path):
         description=f"Final model after {num_epochs} epochs with AUC: {auc_score:.4f}",
         metadata={"epoch": num_epochs, "val_auc": auc_score, "config": cfg},
     )
-    final_artifact.add_file("final_model.pth")
+    final_artifact.add_file(f"final_model_{wandb.run.id}.pth")
     wandb.log_artifact(final_artifact, aliases=["final"])
 
 
