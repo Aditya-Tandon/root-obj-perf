@@ -75,6 +75,12 @@ class PairwiseEmbedding(nn.Module):
         norm_p_sum_sq = p_sq + p_sq.transpose(1, 2) + 2 * p_dot_p
         m_2 = (E + E.transpose(1, 2)) ** 2 - norm_p_sum_sq  # (B, N, N)
 
+        # take the log of all features to compress the range
+        delta = torch.log(torch.clamp(delta, min=1e-8))
+        m_2 = torch.log(torch.clamp(m_2, min=1e-8))
+        k_t = torch.log(torch.clamp(k_t, min=1e-8))
+        z = torch.log(torch.clamp(z, min=1e-8))
+
         u = torch.stack([delta, k_t, z, m_2], dim=-1)
 
         if particle_mask is not None:
@@ -99,6 +105,7 @@ class ParticleAttentionBlock(nn.Module):
 
         self.qkv = nn.Linear(embed_dim, embed_dim * 3, bias=False)
         self.proj = nn.Linear(embed_dim, embed_dim)
+        self.attn_drop = nn.Dropout(dropout)
 
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
@@ -148,6 +155,7 @@ class ParticleAttentionBlock(nn.Module):
         attn = attn.softmax(dim=-1)
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
+        x = self.attn_drop(x)
         x = x + residual
 
         # --- 2. MLP ---
@@ -172,6 +180,7 @@ class ClassAttentionBlock(nn.Module):
 
         self.qkv = nn.Linear(embed_dim, embed_dim * 3, bias=False)
         self.proj = nn.Linear(embed_dim, embed_dim)
+        self.attn_drop = nn.Dropout(dropout)
 
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
@@ -224,6 +233,7 @@ class ClassAttentionBlock(nn.Module):
         attn = attn.softmax(dim=-1)
         x_cls = (attn @ v).transpose(1, 2).reshape(B, 1, C)  # (B, 1, C)
         x_cls = self.proj(x_cls)
+        x_cls = self.attn_drop(x_cls)
 
         # Replace CLS token embedding
         x = torch.cat([x_cls, x[:, 1:, :]], dim=1)
