@@ -34,7 +34,10 @@ class L1JetDataset(Dataset):
             self.mask = self.X[..., 0] != 0
             print("No particle_mask in dataset, inferring from non-zero energy")
 
-        self.weights = torch.from_numpy(data["weights"]).float().unsqueeze(1)
+        if "weights" in data.files:
+            self.weights = torch.from_numpy(data["weights"]).float().unsqueeze(1)
+        else:
+            self.weights = torch.ones_like(self.y)
 
         print(f"Data loaded: {self.X.shape} samples")
 
