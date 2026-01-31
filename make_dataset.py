@@ -21,7 +21,7 @@ ak.behavior.update(vector.backends.awkward.behavior)
 
 
 def compute_kinematic_weights(
-    pt, eta, y, n_bins_pt=50, n_bins_eta=20, max_pt=500, clip_max=10.0
+    pt, eta, y, n_bins_pt=50, n_bins_eta=20, max_pt=500, clip_max=10.0, on_signal=True
 ):
     """
     Calculates weights to make Signal (y=1) kinematics match Background (y=0).
@@ -55,7 +55,10 @@ def compute_kinematic_weights(
 
     # 4. Calculate Ratio Map: P(B) / P(S)
     # This is the weight we need to apply to Signal to make it look like Bkg
-    ratio_map = np.divide(H_bkg, H_sig)
+    if on_signal:
+        ratio_map = np.divide(H_bkg, H_sig)
+    else:
+        ratio_map = np.divide(H_sig, H_bkg)
 
     # 5. Map Weights back to individual events
     # Find which bin each event falls into
@@ -69,20 +72,29 @@ def compute_kinematic_weights(
     # Lookup weights for all events
     all_weights = ratio_map[pt_idx, eta_idx]
 
-    # 6. Apply Logic: Only reweight Signal
+    # 6. Apply Logic: Only reweight Signal or Background based on on_signal flag
+    # If on_signal=True
     # If y=0 (Bkg), weight = 1.0
     # If y=1 (Sig), weight = Ratio
+    # If on_signal=False, reverse
     final_weights = np.ones_like(y, dtype=np.float32)
-    final_weights[sig_mask] = all_weights[sig_mask]
-
+    if on_signal:
+        final_weights[sig_mask] = all_weights[sig_mask]
+    else:
+        final_weights[bkg_mask] = all_weights[bkg_mask]
     # 7. Clip Weights
     # If P(S) is very small in some bin, the weight becomes huge.
     # This destabilises training. Clipping (e.g., at 10) is standard practice.
     final_weights = np.clip(final_weights, 0.1, clip_max)
 
-    print(f"Weight Statistics (Signal only):")
-    print(f"  Mean: {np.mean(final_weights[sig_mask]):.3f}")
-    print(f"  Max:  {np.max(final_weights[sig_mask]):.3f}")
+    if not on_signal:
+        print(f"Weight Statistics (Background only):")
+        print(f"  Mean: {np.mean(final_weights[bkg_mask]):.3f}")
+        print(f"  Max:  {np.max(final_weights[bkg_mask]):.3f}")
+    else:
+        print(f"Weight Statistics (Signal only):")
+        print(f"  Mean: {np.mean(final_weights[sig_mask]):.3f}")
+        print(f"  Max:  {np.max(final_weights[sig_mask]):.3f}")
 
     return final_weights
 
@@ -384,6 +396,7 @@ def generate_dataset(
     num_constituents=16,
     collection_key="l1barrelextpuppi",
     min_constituents=1,
+    on_signal=True,
 ):
     """
     Main loop that processes the file in chunks and saves to disk incrementally.
@@ -401,6 +414,8 @@ def generate_dataset(
     min_constituents : int
         Minimum number of constituents required per jet. Jets with fewer
         constituents are removed to avoid duplicate padding-only samples.
+    on_signal : bool
+        Whether to apply kinematic reweighting to signal (True) or background (False).
     """
     with open(config_path, "r") as f:
         config = json.load(f)
@@ -457,7 +472,9 @@ def generate_dataset(
     final_eta = final_jet_4_vecs.eta
 
     print("Computing kinematic weights...")
-    sample_weights = compute_kinematic_weights(final_pt, final_eta, final_y)
+    sample_weights = compute_kinematic_weights(
+        final_pt, final_eta, final_y, on_signal=on_signal
+    )
 
     print(f"Saving {final_X.shape} dataset to {output_file}...")
     print(f"  - Features shape: {final_X.shape}")
@@ -510,6 +527,12 @@ if __name__ == "__main__":
         default="l1barrelextpuppi",
         help="Key for the L1 candidate collection to use.",
     )
+    argparse.add_argument(
+        "--on_signal",
+        type=bool,
+        default=True,
+        help="Whether to apply kinematic reweighting to signal (True) or background (False).",
+    )
     args = argparse.parse_args()
     generate_dataset(
         config_path=args.config,
@@ -518,4 +541,5 @@ if __name__ == "__main__":
         num_constituents=args.num_constituents,
         collection_key=args.collection_key,
         min_constituents=1,
+        on_signal=args.on_signal,
     )
