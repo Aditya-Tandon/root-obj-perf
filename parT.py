@@ -69,11 +69,13 @@ class PairwiseEmbedding(nn.Module):
 
         z = torch.min(pt, pt.transpose(1, 2)) / (pt + pt.transpose(1, 2) + 1e-8)
 
-        p = x[..., 1:4]  # (B, N, 3)
-        p_dot_p = torch.matmul(p, p.transpose(1, 2))  # (B, N, N)
-        p_sq = torch.sum(p**2, dim=-1, keepdim=True)  # (B, N, 1)
-        norm_p_sum_sq = p_sq + p_sq.transpose(1, 2) + 2 * p_dot_p
-        m_2 = (E + E.transpose(1, 2)) ** 2 - norm_p_sum_sq  # (B, N, N)
+        # p = x[..., 1:4]  # (B, N, 3)
+        # p_dot_p = torch.matmul(p, p.transpose(1, 2))  # (B, N, N)
+        # p_sq = torch.sum(p**2, dim=-1, keepdim=True)  # (B, N, 1)
+        # norm_p_sum_sq = p_sq + p_sq.transpose(1, 2) + 2 * p_dot_p
+        # m_2 = (E + E.transpose(1, 2)) ** 2 - norm_p_sum_sq  # (B, N, N)
+        m = x[..., 0].unsqueeze(2)  # (B, N, 1)
+        m_2 = (m + m.transpose(1, 2)) ** 2  # (B, N, N)
 
         # take the log of all features to compress the range
         delta = torch.log(torch.clamp(delta, min=1e-8))
@@ -81,7 +83,18 @@ class PairwiseEmbedding(nn.Module):
         k_t = torch.log(torch.clamp(k_t, min=1e-8))
         z = torch.log(torch.clamp(z, min=1e-8))
 
-        u = torch.stack([delta, k_t, z, m_2], dim=-1)
+        dxy = x[..., 4].unsqueeze(2)  # (B, N, 1)
+        z0 = x[..., 5].unsqueeze(2)  # (B, N, 1)
+        q = x[..., 6].unsqueeze(2)  # (B, N, 1)
+
+        d_dxy = dxy - dxy.transpose(1, 2)  # (B, N, N)
+        d_z0 = z0 - z0.transpose(1, 2)  # (B, N, N)
+
+        pt_jet = pt.sum(dim=1, keepdim=True)  # (B, 1, 1)
+        q = q * pt / (pt_jet + 1e-8)  # charge weighted by pt
+        q_ij = q * q.transpose(1, 2)  # (B, N, N)
+
+        u = torch.stack([delta, k_t, z, m_2, d_dxy, d_z0, q_ij], dim=-1)
 
         if particle_mask is not None:
             pairwise_mask = particle_mask.unsqueeze(1) & particle_mask.unsqueeze(
@@ -252,7 +265,7 @@ class ParticleTransformer(nn.Module):
         self,
         input_dim,
         embed_dim=128,
-        num_pairwise_feat=4,
+        num_pairwise_feat=7,
         num_heads=8,
         num_layers=8,
         num_cls_layers=2,
