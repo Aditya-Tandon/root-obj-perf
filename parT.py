@@ -74,8 +74,13 @@ class PairwiseEmbedding(nn.Module):
         # p_sq = torch.sum(p**2, dim=-1, keepdim=True)  # (B, N, 1)
         # norm_p_sum_sq = p_sq + p_sq.transpose(1, 2) + 2 * p_dot_p
         # m_2 = (E + E.transpose(1, 2)) ** 2 - norm_p_sum_sq  # (B, N, N)
-        m = x[..., 0].unsqueeze(2)  # (B, N, 1)
-        m_2 = (m + m.transpose(1, 2)) ** 2  # (B, N, N)
+        m_2 = (
+            2
+            * pt
+            * pt.transpose(1, 2)
+            * (torch.cosh(r - r.transpose(1, 2)) - torch.cos(phi - phi.transpose(1, 2)))
+            + 1e-8
+        )
 
         # take the log of all features to compress the range
         delta = torch.log(torch.clamp(delta, min=1e-8))
