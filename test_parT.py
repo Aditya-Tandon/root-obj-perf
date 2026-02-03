@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from parT import (
     to_rapidity,
-    to_phi,
+    to_energy,
     to_pt,
     PairwiseEmbedding,
     ParticleAttentionBlock,
@@ -13,20 +13,29 @@ from parT import (
 
 
 def generate_physical_data(batch_size, num_particles):
-    """Generates physical 4-vectors where E > |p| to avoid NaNs in rapidity."""
-    # (B, N, 3)
-    p = torch.randn(batch_size, num_particles, 3)
-    # (B, N)
-    m = torch.rand(batch_size, num_particles) + 0.1
-    p_sq = torch.sum(p**2, dim=-1)
-    E = torch.sqrt(p_sq + m**2) + 0.01  # Ensure margin
-    # (B, N, 4) -> E, px, py, pz
-    x = torch.cat([E.unsqueeze(-1), p], dim=-1)
+    """Generates physical data in [mass, pt, eta, phi, dxy, z0, q] format."""
+    # Mass: positive values
+    mass = torch.rand(batch_size, num_particles) * 0.5 + 0.1  # (B, N)
+    # pT: positive transverse momentum
+    pt = torch.rand(batch_size, num_particles) * 100 + 1.0  # (B, N)
+    # eta: pseudorapidity, typically in range [-5, 5]
+    eta = torch.randn(batch_size, num_particles) * 2  # (B, N)
+    # phi: azimuthal angle in range [-pi, pi]
+    phi = (torch.rand(batch_size, num_particles) * 2 - 1) * torch.pi  # (B, N)
+    # dxy: impact parameter
+    dxy = torch.randn(batch_size, num_particles) * 0.1
+    # z0: longitudinal impact parameter
+    z0 = torch.randn(batch_size, num_particles) * 5.0
+    # q: charge
+    q = torch.randint(0, 2, (batch_size, num_particles)).float() * 2 - 1
+
+    # (B, N, 7) -> mass, pt, eta, phi, dxy, z0, q
+    x = torch.stack([mass, pt, eta, phi, dxy, z0, q], dim=-1)
     return x
 
 
 class TestPhysicsUtilityFunctions(unittest.TestCase):
-    """Test physics utility functions for converting 4-vectors to rapidity, phi, and pt."""
+    """Test physics utility functions for converting [mass, pt, eta, phi] to rapidity, energy, and pt."""
 
     def setUp(self):
         """Set up test fixtures."""
@@ -35,14 +44,15 @@ class TestPhysicsUtilityFunctions(unittest.TestCase):
         self.eps = 1e-8
 
     def test_to_rapidity_basic(self):
-        """Test rapidity calculation for basic 4-vectors."""
-        # Create test 4-vectors [E, px, py, pz] where E > |pz|
-        x = torch.tensor([[[10.0, 0.0, 0.0, 5.0]]])  # Shape: (1, 1, 4)
+        """Test rapidity calculation for basic inputs."""
+        # Create test data [mass, pt, eta, phi]
+        # For eta=0, rapidity should also be ~0 for any mass/pt
+        x = torch.tensor([[[0.1, 10.0, 0.0, 0.0]]])  # Shape: (1, 1, 4)
         rapidity = to_rapidity(x)
 
-        # Expected: 0.5 * log((10+5)/(10-5)) = 0.5 * log(3)
-        expected = 0.5 * torch.log(torch.tensor(3.0))
-        self.assertAlmostEqual(rapidity.item(), expected.item(), places=5)
+        # For eta=0: E = sqrt(m^2 + pt^2), pz = pt*sinh(0) = 0
+        # rapidity = log((E + pz)/(sqrt(m^2 + pt^2))) = log(1) = 0
+        self.assertAlmostEqual(rapidity.item(), 0.0, places=3)
 
     def test_to_rapidity_shape(self):
         """Test that rapidity maintains correct shape."""
@@ -54,46 +64,43 @@ class TestPhysicsUtilityFunctions(unittest.TestCase):
 
     def test_to_rapidity_stability(self):
         """Test rapidity calculation stability with eps parameter."""
-        # Test case where E is close to pz
-        # Using a safe margin because to_rapidity has eps,
-        # but log(0) is still -inf unless handled by eps dominance.
-        # But for physical particles E >= pz.
-        x = torch.tensor([[[1.0, 0.0, 0.0, 0.9999]]])
+        # Test with large eta values
+        x = torch.tensor([[[0.1, 10.0, 4.0, 0.0]]])
         rapidity = to_rapidity(x)
 
         # Should not produce NaN or inf
         self.assertFalse(torch.isnan(rapidity).any())
         self.assertFalse(torch.isinf(rapidity).any())
 
-    def test_to_phi_basic(self):
-        """Test phi (azimuthal angle) calculation."""
-        # Test vector along x-axis: phi = 0
-        x = torch.tensor([[[0.0, 1.0, 0.0, 0.0]]])
-        phi = to_phi(x)
-        self.assertAlmostEqual(phi.item(), 0.0, places=5)
+    def test_to_energy_basic(self):
+        """Test energy calculation."""
+        # Create test data [mass, pt, eta, phi]
+        # E = sqrt(m^2 + pt^2 * cosh(eta)^2)
+        # For eta=0: cosh(0)=1, so E = sqrt(m^2 + pt^2)
+        mass, pt, eta = 3.0, 4.0, 0.0
+        x = torch.tensor([[[mass, pt, eta, 0.0]]])
+        energy = to_energy(x)
 
-        # Test vector along y-axis: phi = pi/2
-        x = torch.tensor([[[0.0, 0.0, 1.0, 0.0]]])
-        phi = to_phi(x)
-        self.assertAlmostEqual(phi.item(), torch.pi / 2, places=5)
+        expected = torch.sqrt(torch.tensor(mass**2 + pt**2))
+        self.assertAlmostEqual(energy.item(), expected.item(), places=5)
 
-    def test_to_phi_shape(self):
-        """Test that phi maintains correct shape."""
+    def test_to_energy_shape(self):
+        """Test that energy maintains correct shape."""
         x = generate_physical_data(self.batch_size, self.num_particles)
-        phi = to_phi(x)
+        energy = to_energy(x)
 
         expected_shape = (self.batch_size, self.num_particles)
-        self.assertEqual(phi.shape, expected_shape)
+        self.assertEqual(energy.shape, expected_shape)
 
-    def test_to_phi_mask(self):
-        """Test that phi returns 0 for masked particles."""
-        # Create particles with px=py=0
-        x = torch.tensor([[[0.0, 0.0, 0.0, 0.0]]])
-        phi = to_phi(x)
-        self.assertEqual(phi.item(), 0.0)
+    def test_to_energy_positive(self):
+        """Test that energy is always positive."""
+        x = generate_physical_data(self.batch_size, self.num_particles)
+        energy = to_energy(x)
+        self.assertTrue((energy > 0).all())
 
     def test_to_pt_basic(self):
-        """Test transverse momentum calculation."""
+        """Test transverse momentum calculation from px, py."""
+        # The to_pt function uses x[..., 1] as px and x[..., 2] as py
         # px=3, py=4 -> pt=5
         x = torch.tensor([[[0.0, 3.0, 4.0, 0.0]]])
         pt = to_pt(x)
@@ -121,7 +128,7 @@ class TestPairwiseEmbedding(unittest.TestCase):
         """Set up test fixtures."""
         self.batch_size = 2
         self.num_particles = 8
-        self.input_dim = 4  # delta, k_t, z, m^2
+        self.input_dim = 7  # delta, k_t, z, m^2, d_dxy, d_z0, q_ij
         self.out_dim = 32
         self.model = PairwiseEmbedding(self.input_dim, self.out_dim)
 
@@ -149,17 +156,16 @@ class TestPairwiseEmbedding(unittest.TestCase):
 
         output = self.model(x, particle_mask=mask)
 
-        # Since PairwiseEmbedding uses a bias, masked regions won't be strictly zero
-        # unless the net has no bias or we mask the output.
-        # But inputs are zeroed, so all masked regions should have identical values (the bias)
-
+        # The mask zeros out the input features before passing through the network.
+        # Since the network has biases, masked regions will have identical values
+        # (the response of the network to zero input).
         masked_output = output[:, 4:, 4:, :]
-        # Check that all values in masked region are identical
-        # We compare to expected 'zero input' network response
-        dummy = torch.zeros(1, 4)  # (delta, kt, z, m2) = 0
+
+        # All masked positions should produce identical outputs (from zero input)
+        dummy = torch.zeros(1, 7)  # (delta, kt, z, m2, dxy, z0, q) = 0
         expected = self.model.net(dummy)
 
-        # Compare first element of masked region to expected
+        # Check that first element of masked region matches expected
         self.assertTrue(torch.allclose(masked_output[0, 0, 0], expected[0], atol=1e-5))
 
     def test_pairwise_symmetry(self):
@@ -298,7 +304,7 @@ class TestParticleTransformer(unittest.TestCase):
         """Set up test fixtures."""
         self.batch_size = 2
         self.num_particles = 16
-        self.input_dim = 4
+        self.input_dim = 7
         self.embed_dim = 64
         self.num_heads = 4
         self.num_layers = 2
@@ -308,7 +314,7 @@ class TestParticleTransformer(unittest.TestCase):
         self.model = ParticleTransformer(
             input_dim=self.input_dim,
             embed_dim=self.embed_dim,
-            num_pairwise_feat=4,
+            num_pairwise_feat=7,
             num_heads=self.num_heads,
             num_layers=self.num_layers,
             num_cls_layers=self.num_cls_layers,
@@ -337,13 +343,16 @@ class TestParticleTransformer(unittest.TestCase):
 
     def test_gradient_flow(self):
         """Test that gradients flow properly through the model."""
-        # Manually create tensor to enable grads
-        p = torch.randn(self.batch_size, self.num_particles, 3)
-        m = torch.rand(self.batch_size, self.num_particles) + 0.1
-        p_sq = torch.sum(p**2, dim=-1)
-        E = torch.sqrt(p_sq + m**2) + 0.01
+        # Create tensor with gradients enabled in [mass, pt, eta, phi] format
+        mass = torch.rand(self.batch_size, self.num_particles) * 0.5 + 0.1
+        pt = torch.rand(self.batch_size, self.num_particles) * 100 + 1.0
+        eta = torch.randn(self.batch_size, self.num_particles) * 2
+        phi = (torch.rand(self.batch_size, self.num_particles) * 2 - 1) * torch.pi
+        dxy = torch.randn(self.batch_size, self.num_particles) * 0.1
+        z0 = torch.randn(self.batch_size, self.num_particles) * 5.0
+        q = torch.randint(0, 2, (self.batch_size, self.num_particles)).float() * 2 - 1
 
-        x = torch.cat([E.unsqueeze(-1), p], dim=-1).requires_grad_(True)
+        x = torch.stack([mass, pt, eta, phi, dxy, z0, q], dim=-1).requires_grad_(True)
 
         output = self.model(x)
         loss = output.sum()
@@ -439,7 +448,7 @@ class TestIntegration(unittest.TestCase):
     def test_end_to_end_training_step(self):
         """Test a complete training step."""
         model = ParticleTransformer(
-            input_dim=4,
+            input_dim=7,
             embed_dim=32,
             num_heads=4,
             num_layers=2,
@@ -468,7 +477,7 @@ class TestIntegration(unittest.TestCase):
     def test_inference_pipeline(self):
         """Test inference pipeline."""
         model = ParticleTransformer(
-            input_dim=4,
+            input_dim=7,
             embed_dim=32,
             num_heads=4,
             num_layers=2,
@@ -488,7 +497,7 @@ class TestIntegration(unittest.TestCase):
     def test_variable_length_sequences(self):
         """Test handling of variable-length particle sequences with masking."""
         model = ParticleTransformer(
-            input_dim=4,
+            input_dim=7,
             embed_dim=32,
             num_heads=4,
             num_layers=2,
