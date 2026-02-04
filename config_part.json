@@ -1,9 +1,7 @@
 {
     "exp_name": "weighted_ptetaphi_PUPPI",
-    "data_path": "data/l1_ak4_weighted_ptetaphi_training_data.npz",
     "num_constituents": 16,
     "input_dim": 17, 
-    
     "model": {
         "embed_dim": 128,
         "num_heads": 8,
@@ -15,15 +13,19 @@
     "training": {
         "batch_size": 512,
         "epochs": 200,
-        "num_workers": 4,
-        "val_split": 0.3,
-        "use_amp": false,
         "restart": false,
         "wandb_run_path": null,
-        "ckpt_to_load": null,
         "wandb_dir": "wandb",
         "last_epoch_in_prev_run": 0,
         "log_freq": 10,
+        "data": {
+            "pf_data_path": "data/l1_ak4_pf_weighted_ptetaphi_background_training_data.npz",
+            "puppi_data_path": "data/l1_ak4_weighted_ptetaphi_background_training_data.npz",
+            "val_split": 0.3,
+            "match_mode": "size_and_ratio",
+            "num_workers": 0,
+            "use_dataset": "pf"
+        },
         "optimiser": {
             "lr": 5e-4,
             "weight_decay": 1e-3
