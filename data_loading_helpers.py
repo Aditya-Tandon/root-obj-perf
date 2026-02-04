@@ -186,6 +186,15 @@ def select_gen_b_quarks_from_higgs(events):
     return gen_b_quarks_from_H
 
 
+def select_gen_higgs(events):
+    """
+    Finds all the Higgs bosons produced in the events.
+    """
+    is_higgs = events.GenPart.pdgId == 25
+    print(f"Found {ak.sum(ak.num(events.GenPart[is_higgs]))} Higgs bosons.")
+    return events.GenPart[is_higgs]
+
+
 def apply_custom_cuts(reco_jets, config, key, kinematic_only=False, return_jets=True):
     """
     Apply custom cuts to a jet collection.
