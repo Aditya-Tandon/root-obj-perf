@@ -6,104 +6,16 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, Subset
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import train_test_split
 import wandb
 import argparse
 from parT import ParticleTransformer  # Import the new model
 from parT_helpers import extract_wandb_run_id, get_model_ckpt
 
+from train_part_data import CombinedJetDataLoader
 from warmup_cosine_lr import WarmupCosineSchedulerWithRestarts
 
 torch.manual_seed(42)
 np.random.seed(42)
-
-
-# --- Dataset Class ---
-class L1JetDataset(Dataset):
-    def __init__(self, filepath):
-        print(f"Loading data from {filepath}...")
-        data = np.load(filepath)
-        # X: (N, n_constituents, Features)
-        self.X = torch.from_numpy(data["x"]).float()
-        self.y = torch.from_numpy(data["y"]).float().unsqueeze(1)
-
-        # Load particle mask if available, otherwise infer from non-zero energy
-        if "mask" in data.files:
-            self.mask = torch.from_numpy(data["mask"]).bool()
-            print("Loaded particle mask from dataset.")
-        else:
-            # Fallback: infer mask from non-zero particles (E != 0)
-            self.mask = self.X[..., 0] != 0
-            print("No particle_mask in dataset, inferring from non-zero energy")
-
-        if "weights" in data.files:
-            print("Loaded weights from dataset.")
-            self.weights = torch.from_numpy(data["weights"]).float().unsqueeze(1)
-        else:
-            print("No weights in dataset, using uniform weights of 1.0")
-            self.weights = torch.ones_like(self.y)
-
-        print(f"Data loaded: {self.X.shape} samples")
-
-    def __len__(self):
-        return len(self.y)
-
-    def __getitem__(self, idx):
-        return self.X[idx], self.y[idx], self.mask[idx], self.weights[idx]
-
-
-# --- Stratified Split Helper ---
-def stratified_split(dataset, val_split, num_classes, random_state=42, verbose=True):
-    """
-    Perform a stratified train/validation split on a dataset.
-
-    Args:
-        dataset: Dataset object with a .y attribute containing labels
-        val_split: Fraction of data to use for validation (0-1)
-        num_classes: Number of classes (1 for binary classification)
-        random_state: Random seed for reproducibility
-        verbose: Whether to print class distribution statistics
-
-    Returns:
-        train_ds: Training subset
-        val_ds: Validation subset
-        train_indices: Indices of training samples
-        val_indices: Indices of validation samples
-        stratify_labels: Labels used for stratification
-    """
-    # Get labels for stratification
-    # For binary classification (num_classes=1), use the binary labels directly
-    # For multi-class, the labels should already be class indices
-    stratify_labels = dataset.y.squeeze().numpy().astype(int)
-
-    # Create indices and perform stratified split
-    indices = np.arange(len(dataset))
-    train_indices, val_indices = train_test_split(
-        indices,
-        test_size=val_split,
-        stratify=stratify_labels,
-        random_state=random_state,
-    )
-
-    train_ds = Subset(dataset, train_indices)
-    val_ds = Subset(dataset, val_indices)
-
-    if verbose:
-        # Print class distribution for verification
-        train_labels = stratify_labels[train_indices]
-        val_labels = stratify_labels[val_indices]
-        print(f"Stratified split complete:")
-        print(f"  Train set: {len(train_ds)} samples")
-        print(f"  Val set: {len(val_ds)} samples")
-        for c in range(max(num_classes, 2)):
-            train_count = np.sum(train_labels == c)
-            val_count = np.sum(val_labels == c)
-            print(
-                f"  Class {c}: Train={train_count} ({100*train_count/len(train_ds):.1f}%), "
-                f"Val={val_count} ({100*val_count/len(val_ds):.1f}%)"
-            )
-
-    return train_ds, val_ds, train_indices, val_indices, stratify_labels
 
 
 # --- Training Helper ---
@@ -115,7 +27,7 @@ def run_training(config_path):
     restart = cfg["training"]["restart"]
     # 2. Initialize WandB
     if restart:
-        run_id = run_id = extract_wandb_run_id(cfg["training"]["wandb_run_path"])
+        run_id = extract_wandb_run_id(cfg["training"]["wandb_run_path"])
     else:
         run_id = None
     wandb.init(
@@ -135,35 +47,28 @@ def run_training(config_path):
     print(f"Using device: {device}")
 
     # 3. Prepare Data
-    dataset = L1JetDataset(cfg["data_path"])
-    num_classes = cfg["model"]["num_classes"]
-
-    # Perform stratified split
-    train_ds, val_ds, train_indices, val_indices, stratify_labels = stratified_split(
-        dataset=dataset,
-        val_split=cfg["training"]["val_split"],
-        num_classes=num_classes,
+    combined_loader = CombinedJetDataLoader(
+        pf_data_path=cfg["training"]["data"]["pf_data_path"],
+        puppi_data_path=cfg["training"]["data"]["puppi_data_path"],
+        val_split=cfg["training"]["data"]["val_split"],
+        batch_size=cfg["training"]["batch_size"],
+        match_mode=cfg["training"]["data"]["match_mode"],
+        num_workers=cfg["training"]["data"]["num_workers"],
         random_state=42,
-        verbose=True,
     )
-
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=cfg["training"]["batch_size"],
-        shuffle=True,
-        num_workers=cfg["training"]["num_workers"],
-        pin_memory=True,
-        persistent_workers=True,
+    if cfg["training"]["data"]["use_dataset"] == "pf":
+        print("\nUsing PF dataset for training.")
+        train_loader, train_indices, val_loader, val_indices, stratify_labels = (
+            combined_loader.get_pf_loaders(shuffle=True)
+        )
+    elif cfg["training"]["data"]["use_dataset"] == "puppi":
+        print("\nUsing PUPPI dataset for training.")
+        train_loader, train_indices, val_loader, val_indices, stratify_labels = (
+            combined_loader.get_puppi_loaders(shuffle=True)
+        )
+    print(
+        f"Data loaders prepared with {len(train_loader.dataset)} training samples and {len(val_loader.dataset)} validation samples."
     )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=cfg["training"]["batch_size"],
-        shuffle=False,
-        num_workers=cfg["training"]["num_workers"],
-        pin_memory=True,
-        persistent_workers=True,
-    )
-    print("Data loaders prepared.")
 
     # 4. Initialize Particle Transformer
     model = ParticleTransformer(
