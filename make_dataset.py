@@ -21,7 +21,7 @@ ak.behavior.update(vector.backends.awkward.behavior)
 
 
 def compute_kinematic_weights(
-    pt, eta, y, n_bins_pt=50, n_bins_eta=20, max_pt=500, clip_max=10.0, on_signal=True
+    pt, eta, y, n_bins_pt=100, n_bins_eta=50, max_pt=500, clip_max=10.0, on_signal=True
 ):
     """
     Calculates weights to make Signal (y=1) kinematics match Background (y=0).
