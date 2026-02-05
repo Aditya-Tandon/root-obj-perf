@@ -189,9 +189,10 @@ def stratified_train_val_split(
     train_ds = Subset(dataset, train_indices)
     val_ds = Subset(dataset, val_indices)
 
+    train_labels = labels[train_indices]
+    val_labels = labels[val_indices]
     if verbose:
-        train_labels = labels[train_indices]
-        val_labels = labels[val_indices]
+
         print(f"Stratified split complete:")
         print(f"  Train set: {len(train_ds)} samples")
         print(f"  Val set: {len(val_ds)} samples")
@@ -204,7 +205,7 @@ def stratified_train_val_split(
                 f"Val={val_count} ({100*val_count/len(val_ds):.1f}%)"
             )
 
-    return train_ds, val_ds, train_indices, val_indices, labels
+    return train_ds, val_ds, train_indices, val_indices, train_labels, val_labels
 
 
 def match_dataset_sizes_stratified(
@@ -460,7 +461,8 @@ class CombinedJetDataLoader:
             self.val_pf,
             self.train_pf_indices,
             self.val_pf_indices,
-            self.stratified_labels_pf,
+            self.train_labels_pf,
+            self.val_labels_pf,
         ) = stratified_train_val_split(
             self.pf_dataset, val_split, random_state, verbose=verbose
         )
@@ -473,7 +475,8 @@ class CombinedJetDataLoader:
             self.val_puppi,
             self.train_puppi_indices,
             self.val_puppi_indices,
-            self.stratified_labels_puppi,
+            self.train_labels_puppi,
+            self.val_labels_puppi,
         ) = stratified_train_val_split(
             self.puppi_dataset, val_split, random_state, verbose=verbose
         )
@@ -619,7 +622,8 @@ class CombinedJetDataLoader:
             self.train_pf_indices,
             pf_val_loader,
             self.val_pf_indices,
-            self.stratified_labels_pf,
+            self.train_labels_pf,
+            self.val_labels_pf,
         )
 
     def get_puppi_loaders(self, shuffle: bool = True) -> Tuple[DataLoader, DataLoader]:
@@ -650,7 +654,8 @@ class CombinedJetDataLoader:
             self.train_puppi_indices,
             puppi_val_loader,
             self.val_puppi_indices,
-            self.stratified_labels_puppi,
+            self.train_labels_puppi,
+            self.val_labels_puppi,
         )
 
     def summary(self):

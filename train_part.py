@@ -58,14 +58,24 @@ def run_training(config_path):
     )
     if cfg["training"]["data"]["use_dataset"] == "pf":
         print("\nUsing PF dataset for training.")
-        train_loader, train_indices, val_loader, val_indices, stratify_labels = (
-            combined_loader.get_pf_loaders(shuffle=True)
-        )
+        (
+            train_loader,
+            train_indices,
+            val_loader,
+            val_indices,
+            train_labels,
+            val_labels,
+        ) = combined_loader.get_pf_loaders(shuffle=True)
     elif cfg["training"]["data"]["use_dataset"] == "puppi":
         print("\nUsing PUPPI dataset for training.")
-        train_loader, train_indices, val_loader, val_indices, stratify_labels = (
-            combined_loader.get_puppi_loaders(shuffle=True)
-        )
+        (
+            train_loader,
+            train_indices,
+            val_loader,
+            val_indices,
+            train_labels,
+            val_labels,
+        ) = combined_loader.get_puppi_loaders(shuffle=True)
     print(
         f"Data loaders prepared with {len(train_loader.dataset)} training samples and {len(val_loader.dataset)} validation samples."
     )
@@ -131,7 +141,7 @@ def run_training(config_path):
     # )
 
     # Calculate pos_weight from training subset labels
-    train_labels_tensor = torch.from_numpy(stratify_labels[train_indices]).float()
+    train_labels_tensor = torch.from_numpy(train_labels).float()
     num_neg = torch.sum(train_labels_tensor == 0)
     num_pos = torch.sum(train_labels_tensor == 1)
     pos_weight = (num_neg / num_pos).clone().detach().to(device)
