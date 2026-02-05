@@ -205,7 +205,7 @@ def stratified_train_val_split(
                 f"Val={val_count} ({100*val_count/len(val_ds):.1f}%)"
             )
 
-    return train_ds, val_ds, train_indices, val_indices, train_labels, val_labels
+    return train_ds, val_ds, train_indices, val_indices
 
 
 def match_dataset_sizes_stratified(
@@ -227,7 +227,8 @@ def match_dataset_sizes_stratified(
         verbose: Whether to print statistics
 
     Returns:
-        Downsampled Subset with preserved class distribution
+        Downsampled Subset with preserved class distribution,
+        Labels of the selected samples
     """
     target_size = len(dataset_small)
     large_indices = np.array(dataset_large.indices)
@@ -249,8 +250,8 @@ def match_dataset_sizes_stratified(
 
     subsampled_ds = Subset(original_dataset_large, selected_indices)
 
+    selected_labels = original_dataset_large.labels[selected_indices]
     if verbose:
-        selected_labels = original_dataset_large.labels[selected_indices]
         print(
             f"\nDownsampled dataset from {len(dataset_large)} to {len(subsampled_ds)} samples"
         )
@@ -258,7 +259,7 @@ def match_dataset_sizes_stratified(
             count = np.sum(selected_labels == c)
             print(f"  Class {c}: {count} ({100*count/len(subsampled_ds):.1f}%)")
 
-    return subsampled_ds
+    return subsampled_ds, selected_labels
 
 
 def match_sizes_and_class_ratios(
@@ -290,7 +291,7 @@ def match_sizes_and_class_ratios(
         verbose: Whether to print statistics
 
     Returns:
-        Tuple of (resampled_dataset1, resampled_dataset2)
+        Tuple of (resampled_dataset1, resampled_dataset2, final_labels1, final_labels2)
     """
     np.random.seed(random_state)
 
@@ -377,10 +378,10 @@ def match_sizes_and_class_ratios(
     resampled1 = resample_dataset(indices1, labels1, original_dataset1, "Dataset1")
     resampled2 = resample_dataset(indices2, labels2, original_dataset2, "Dataset2")
 
+    final_labels1 = original_dataset1.labels[np.array(resampled1.indices)]
+    final_labels2 = original_dataset2.labels[np.array(resampled2.indices)]
     if verbose:
         # Verify final distributions
-        final_labels1 = original_dataset1.labels[np.array(resampled1.indices)]
-        final_labels2 = original_dataset2.labels[np.array(resampled2.indices)]
         print(
             f"\n  Final Dataset1: {len(resampled1)} samples, "
             f"Class0={np.sum(final_labels1==0)}, Class1={np.sum(final_labels1==1)}"
@@ -390,7 +391,7 @@ def match_sizes_and_class_ratios(
             f"Class0={np.sum(final_labels2==0)}, Class1={np.sum(final_labels2==1)}"
         )
 
-    return resampled1, resampled2
+    return resampled1, resampled2, final_labels1, final_labels2
 
 
 class CombinedJetDataLoader:
@@ -461,8 +462,6 @@ class CombinedJetDataLoader:
             self.val_pf,
             self.train_pf_indices,
             self.val_pf_indices,
-            self.train_labels_pf,
-            self.val_labels_pf,
         ) = stratified_train_val_split(
             self.pf_dataset, val_split, random_state, verbose=verbose
         )
@@ -475,8 +474,6 @@ class CombinedJetDataLoader:
             self.val_puppi,
             self.train_puppi_indices,
             self.val_puppi_indices,
-            self.train_labels_puppi,
-            self.val_labels_puppi,
         ) = stratified_train_val_split(
             self.puppi_dataset, val_split, random_state, verbose=verbose
         )
@@ -499,31 +496,36 @@ class CombinedJetDataLoader:
         # Training sets
         if len(self.train_pf) > len(self.train_puppi):
             print("\nDownsampling PF training set to match PUPPI size...")
-            self.train_pf = match_dataset_sizes_stratified(
+            self.train_pf, self.train_labels_pf = match_dataset_sizes_stratified(
                 self.train_pf, self.train_puppi, self.pf_dataset, self.random_state
             )
         elif len(self.train_puppi) > len(self.train_pf):
             print("\nDownsampling PUPPI training set to match PF size...")
-            self.train_puppi = match_dataset_sizes_stratified(
+            self.train_puppi, self.train_labels_puppi = match_dataset_sizes_stratified(
                 self.train_puppi, self.train_pf, self.puppi_dataset, self.random_state
             )
 
         # Validation sets
         if len(self.val_pf) > len(self.val_puppi):
             print("\nDownsampling PF validation set to match PUPPI size...")
-            self.val_pf = match_dataset_sizes_stratified(
+            self.val_pf, self.val_labels_pf = match_dataset_sizes_stratified(
                 self.val_pf, self.val_puppi, self.pf_dataset, self.random_state
             )
         elif len(self.val_puppi) > len(self.val_pf):
             print("\nDownsampling PUPPI validation set to match PF size...")
-            self.val_puppi = match_dataset_sizes_stratified(
+            self.val_puppi, self.val_labels_puppi = match_dataset_sizes_stratified(
                 self.val_puppi, self.val_pf, self.puppi_dataset, self.random_state
             )
 
     def _match_sizes_and_ratios(self):
         """Mode 2: Match both sizes AND class ratios."""
         print("\nMatching training sets...")
-        self.train_puppi, self.train_pf = match_sizes_and_class_ratios(
+        (
+            self.train_puppi,
+            self.train_pf,
+            self.train_labels_puppi,
+            self.train_labels_pf,
+        ) = match_sizes_and_class_ratios(
             self.train_puppi,
             self.train_pf,
             self.puppi_dataset,
@@ -534,14 +536,16 @@ class CombinedJetDataLoader:
         )
 
         print("\nMatching validation sets...")
-        self.val_puppi, self.val_pf = match_sizes_and_class_ratios(
-            self.val_puppi,
-            self.val_pf,
-            self.puppi_dataset,
-            self.pf_dataset,
-            self.target_class1_ratio,  # Use dataset1's class ratio as target
-            self.random_state,
-            verbose=self.verbose,
+        self.val_puppi, self.val_pf, self.val_labels_puppi, self.val_labels_pf = (
+            match_sizes_and_class_ratios(
+                self.val_puppi,
+                self.val_pf,
+                self.puppi_dataset,
+                self.pf_dataset,
+                self.target_class1_ratio,  # Use dataset1's class ratio as target
+                self.random_state,
+                verbose=self.verbose,
+            )
         )
 
     def get_train_loaders(self, shuffle: bool = True) -> Tuple[DataLoader, DataLoader]:
