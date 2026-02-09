@@ -3,3 +3,6 @@ __pycache__/
 wandb/
 .ipynb_checkpoints
 *.pth
+Updates*
+*.md
+.DS_Store
