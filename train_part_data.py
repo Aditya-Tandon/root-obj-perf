@@ -190,6 +190,8 @@ def stratified_train_val_split(
         val_ds: Validation Subset
         train_indices: Array of training sample indices
         val_indices: Array of validation sample indices
+        train_labels: Array of training labels (for verification)
+        val_labels: Array of validation labels (for verification)
     """
     labels = dataset.labels
     indices = np.arange(len(dataset))
@@ -217,7 +219,7 @@ def stratified_train_val_split(
                 f"Val={val_count} ({100*val_count/len(val_ds):.1f}%)"
             )
 
-    return train_ds, val_ds, train_indices, val_indices
+    return train_ds, val_ds, train_indices, val_indices, train_labels, val_labels
 
 
 def match_dataset_sizes_stratified(
@@ -1179,6 +1181,8 @@ class CombinedJetDataLoader:
             self.val_pf,
             self.train_pf_indices,
             self.val_pf_indices,
+            self.train_labels_pf,
+            self.val_labels_pf,
         ) = stratified_train_val_split(
             self.pf_dataset, val_split, random_state, verbose=verbose
         )
@@ -1191,6 +1195,8 @@ class CombinedJetDataLoader:
             self.val_puppi,
             self.train_puppi_indices,
             self.val_puppi_indices,
+            self.train_labels_puppi,
+            self.val_labels_puppi,
         ) = stratified_train_val_split(
             self.puppi_dataset, val_split, random_state, verbose=verbose
         )
