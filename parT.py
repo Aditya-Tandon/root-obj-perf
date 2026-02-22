@@ -274,9 +274,11 @@ class ParticleTransformer(nn.Module):
         num_heads=8,
         num_layers=8,
         num_cls_layers=2,
+        num_reg_layers=2,
         dropout=0.1,
         num_classes=1,
         use_batch_norm=True,  # Set to False for small batch overfit tests
+        pt_regression=False,  # If True, also output a regression head for pt prediction
     ):
         super().__init__()
 
@@ -318,6 +320,18 @@ class ParticleTransformer(nn.Module):
             layers.append(nn.Dropout(dropout))
         layers.append(nn.Linear(embed_dim, num_classes))
         self.head = nn.Sequential(*layers)
+
+        # Regression Head (if pt_regression is True)
+        pt_reg_layers = []
+        if pt_regression:
+            for _ in range(num_reg_layers - 1):
+                pt_reg_layers.append(nn.Linear(embed_dim, embed_dim))
+                pt_reg_layers.append(nn.ReLU())
+                pt_reg_layers.append(nn.Dropout(dropout))
+            pt_reg_layers.append(nn.Linear(embed_dim, 1))
+            self.pt_head = nn.Sequential(*pt_reg_layers)
+        else:
+            self.pt_head = None
 
         # Init weights
         nn.init.trunc_normal_(self.cls_token, std=0.02)
@@ -369,4 +383,9 @@ class ParticleTransformer(nn.Module):
 
         # 6. Extract CLS token for classification
         cls_output = x[:, 0]
-        return self.head(cls_output)
+        outputs = {}
+        outputs["classification"] = self.head(cls_output)
+        if self.pt_head is not None:
+            pt_output = self.pt_head(cls_output)
+            outputs["pt"] = pt_output
+        return outputs

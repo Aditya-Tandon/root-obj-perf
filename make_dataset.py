@@ -386,7 +386,20 @@ def process_batch(
     Y = Y[valid_jets]
     particle_mask = particle_mask[valid_jets]
 
-    return X, Y, particle_mask
+    # Compute gen pT per reco jet: for matched (signal) jets use the
+    # matched gen b-quark pT; for unmatched (background) jets use 0.
+    dr_matrix = l1_jets[:, :, None].vector.deltaR(gen_b[:, None, :].vector)
+    idx_closest_gen = ak.argmin(dr_matrix, axis=2)  # (events, n_reco)
+    # Index into gen_b.pt — gives None when no gen particles exist
+    gen_pt_lookup = gen_b.pt[idx_closest_gen]
+    # Keep only for matched (signal) jets; set background to 0
+    gen_pt_per_jet = ak.fill_none(
+        ak.where(is_pure_label, gen_pt_lookup, 0.0), 0.0
+    )
+    gen_pt_flat = ak.to_numpy(ak.flatten(gen_pt_per_jet, axis=1))
+    gen_pt_flat = gen_pt_flat[valid_jets]
+
+    return X, Y, particle_mask, gen_pt_flat
 
 
 def process_batch_for_higgs(
@@ -567,7 +580,18 @@ def process_batch_for_higgs(
     Y = Y[valid_jets]
     particle_mask = particle_mask[valid_jets]
 
-    return X, Y, particle_mask
+    # Compute gen pT per reco jet: matched (signal) jets get the
+    # matched gen Higgs pT; unmatched (background) jets get 0.
+    dr_matrix = l1_jets[:, :, None].vector.deltaR(gen_higgs[:, None, :].vector)
+    idx_closest_gen = ak.argmin(dr_matrix, axis=2)  # (events, n_reco)
+    gen_pt_lookup = gen_higgs.pt[idx_closest_gen]
+    gen_pt_per_jet = ak.fill_none(
+        ak.where(is_pure_label, gen_pt_lookup, 0.0), 0.0
+    )
+    gen_pt_flat = ak.to_numpy(ak.flatten(gen_pt_per_jet, axis=1))
+    gen_pt_flat = gen_pt_flat[valid_jets]
+
+    return X, Y, particle_mask, gen_pt_flat
 
 
 def generate_dataset(
@@ -625,13 +649,14 @@ def generate_dataset(
     all_X = []
     all_y = []
     all_masks = []
+    all_gen_pt = []
 
     # Iterate over the file
     for root_file in tqdm(root_files):
 
         config["file_pattern"] = root_file
         if higgs_mode:
-            X_chunk, y_chunk, mask_chunk = process_batch_for_higgs(
+            X_chunk, y_chunk, mask_chunk, gen_pt_chunk = process_batch_for_higgs(
                 config=config,
                 collections_to_load=collections_to_load,
                 n_constituents=num_constituents,
@@ -639,7 +664,7 @@ def generate_dataset(
                 collection_key=collection_key,
             )
         else:
-            X_chunk, y_chunk, mask_chunk = process_batch(
+            X_chunk, y_chunk, mask_chunk, gen_pt_chunk = process_batch(
                 config=config,
                 collections_to_load=collections_to_load,
                 n_constituents=num_constituents,
@@ -650,12 +675,14 @@ def generate_dataset(
         all_X.append(X_chunk)
         all_y.append(y_chunk)
         all_masks.append(mask_chunk)
+        all_gen_pt.append(gen_pt_chunk)
         print(f"  Processed batch: {len(X_chunk)} jets")
 
     # Final Concatenation
     final_X = np.concatenate(all_X, axis=0)
     final_y = np.concatenate(all_y, axis=0)
     final_mask = np.concatenate(all_masks, axis=0)
+    final_gen_pt = np.concatenate(all_gen_pt, axis=0)
 
     final_4_vecs = vector.array(
         {
@@ -687,6 +714,7 @@ def generate_dataset(
         jet_pt=final_pt,
         jet_eta=final_eta,
         weights=sample_weights,
+        gen_pt=final_gen_pt,
     )
     print("Done.")
 
@@ -746,4 +774,5 @@ if __name__ == "__main__":
         collection_key=args.collection_key,
         min_constituents=1,
         on_signal=args.on_signal,
+        higgs_mode=args.higgs_mode,
     )

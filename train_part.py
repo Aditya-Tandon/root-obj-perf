@@ -31,7 +31,7 @@ def run_training(config_path):
     else:
         run_id = None
     wandb.init(
-        project="L1-BTagging-ParT",
+        project=cfg["wandb"]["project"],
         config=cfg,
         name=cfg["exp_name"],
         id=run_id,
@@ -81,6 +81,8 @@ def run_training(config_path):
     )
 
     # 4. Initialize Particle Transformer
+    pt_regression = cfg["model"].get("pt_regression", False)
+
     model = ParticleTransformer(
         input_dim=cfg["input_dim"],
         embed_dim=cfg["model"]["embed_dim"],
@@ -89,8 +91,12 @@ def run_training(config_path):
         num_cls_layers=cfg["model"]["num_cls_layers"],
         dropout=cfg["model"]["dropout"],
         num_classes=cfg["model"]["num_classes"],
+        pt_regression=pt_regression,
     ).to(device)
     print("Model loaded.")
+
+    if pt_regression:
+        print("PT regression head enabled in the model.")
 
     # 5. Optimiser & Scheduler
     optimiser = optim.AdamW(
@@ -159,72 +165,123 @@ def run_training(config_path):
     print(f"Starting training from epoch {start_epoch} for {num_epochs} epochs.")
     for epoch in range(start_epoch, num_epochs):
         model.train()
-        total_loss = 0
 
+        train_cls_loss_sum = 0.0
+        train_reg_loss_sum = 0.0
         train_outputs = []
         train_labels = []
-        for X_batch, y_batch, mask_batch, weights in train_loader:
+        n_train_batches = 0
+
+        for X_batch, y_batch, mask_batch, weights, jet_pt, _, gen_pt in train_loader:
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
             mask_batch = mask_batch.to(device)
             weights = weights.to(device)
+            jet_pt = jet_pt.to(device)
+            gen_pt = gen_pt.to(device)
 
             optimiser.zero_grad()
 
             outputs = model(X_batch, particle_mask=mask_batch)
-            # Apply per-sample kinematic weights to the loss
-            per_sample_loss = criterion(outputs, y_batch)
-            weighted_loss = per_sample_loss * weights
-            loss = weighted_loss.mean()
+            cls_output = (
+                outputs["classification"] if isinstance(outputs, dict) else outputs
+            )
+            pt_output = outputs.get("pt", None) if isinstance(outputs, dict) else None
 
+            # Classification loss (weighted)
+            per_sample_loss = criterion(cls_output, y_batch)
+            cls_loss = (per_sample_loss * weights).mean()
+
+            # Regression loss (signal-only)
+            reg_loss = torch.tensor(0.0, device=device)
+            if pt_output is not None:
+                signal_mask = y_batch.squeeze() == 1
+                if signal_mask.any():
+                    pt_target = (gen_pt[signal_mask] / jet_pt[signal_mask]).squeeze()
+                    pt_pred = pt_output.squeeze()[signal_mask]
+                    reg_loss = nn.functional.mse_loss(pt_pred, pt_target)
+
+            loss = cls_loss + reg_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
             optimiser.step()
 
-            total_loss += loss.item()
+            train_cls_loss_sum += cls_loss.item()
+            train_reg_loss_sum += reg_loss.item()
+            n_train_batches += 1
 
-            train_outputs.append(torch.sigmoid(outputs).detach().cpu().numpy())
+            train_outputs.append(torch.sigmoid(cls_output).detach().cpu().numpy())
             train_labels.append(y_batch.cpu().numpy())
         scheduler.step()
 
-        avg_train_loss = total_loss / len(train_loader)
-        train_auc = roc_auc_score(
-            np.concatenate(train_labels), np.concatenate(train_outputs)
-        )
+        # --- Train metrics ---
+        train_metrics = {
+            "train_loss": (train_cls_loss_sum + train_reg_loss_sum) / n_train_batches,
+            "train_cls_loss": train_cls_loss_sum / n_train_batches,
+            "train_auc": roc_auc_score(
+                np.concatenate(train_labels), np.concatenate(train_outputs)
+            ),
+        }
+        if pt_regression:
+            train_metrics["train_reg_loss"] = train_reg_loss_sum / n_train_batches
 
         # Validation
         model.eval()
         all_preds, all_labels = [], []
-        val_loss = 0
+        val_cls_loss_sum = 0.0
+        val_reg_loss_sum = 0.0
+        n_val_batches = 0
 
         with torch.no_grad():
-            for X_batch, y_batch, mask_batch, _ in val_loader:
+            for X_batch, y_batch, mask_batch, _, jet_pt, _, gen_pt in val_loader:
                 X_batch = X_batch.to(device)
                 y_batch = y_batch.to(device)
                 mask_batch = mask_batch.to(device)
-                outputs = model(X_batch, particle_mask=mask_batch)
-                # For validation, use unweighted loss (mean of per-sample losses)
-                val_loss += criterion(outputs, y_batch).mean().item()
+                jet_pt = jet_pt.to(device)
+                gen_pt = gen_pt.to(device)
 
-                all_preds.append(torch.sigmoid(outputs).cpu().numpy())
+                outputs = model(X_batch, particle_mask=mask_batch)
+                cls_output = (
+                    outputs["classification"] if isinstance(outputs, dict) else outputs
+                )
+                pt_output = (
+                    outputs.get("pt", None) if isinstance(outputs, dict) else None
+                )
+
+                val_cls_loss_sum += criterion(cls_output, y_batch).mean().item()
+
+                if pt_output is not None:
+                    signal_mask = y_batch.squeeze() == 1
+                    if signal_mask.any():
+                        pt_target = (
+                            gen_pt[signal_mask] / jet_pt[signal_mask]
+                        ).squeeze()
+                        pt_pred = pt_output.squeeze()[signal_mask]
+                        val_reg_loss_sum += nn.functional.mse_loss(
+                            pt_pred, pt_target
+                        ).item()
+
+                n_val_batches += 1
+                all_preds.append(torch.sigmoid(cls_output).cpu().numpy())
                 all_labels.append(y_batch.cpu().numpy())
 
-        avg_val_loss = val_loss / len(val_loader)
-        auc_score = roc_auc_score(np.concatenate(all_labels), np.concatenate(all_preds))
+        # --- Val metrics ---
+        val_metrics = {
+            "val_loss": (val_cls_loss_sum + val_reg_loss_sum) / n_val_batches,
+            "val_cls_loss": val_cls_loss_sum / n_val_batches,
+            "val_auc": roc_auc_score(
+                np.concatenate(all_labels), np.concatenate(all_preds)
+            ),
+        }
+        if pt_regression:
+            val_metrics["val_reg_loss"] = val_reg_loss_sum / n_val_batches
 
         # Logging
+        auc_score = val_metrics["val_auc"]
         print(
-            f"Epoch {epoch+1} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val AUC: {auc_score:.4f}"
+            f"Epoch {epoch+1} | Train Loss: {train_metrics['train_loss']:.4f} | "
+            f"Val Loss: {val_metrics['val_loss']:.4f} | Val AUC: {auc_score:.4f}"
         )
-        train_metrics = {
-            "train_loss": avg_train_loss,
-            "train_auc": train_auc,
-        }
-        val_metrics = {
-            "val_loss": avg_val_loss,
-            "val_auc": auc_score,
-        }
         epoch_metrics = {
             "epoch": epoch + 1,
             **train_metrics,

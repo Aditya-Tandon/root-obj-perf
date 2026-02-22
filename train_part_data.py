@@ -107,16 +107,18 @@ class StratifiedJetDataset(Dataset):
         weights: Tensor of shape (N, 1) - sample weights
     """
 
-    def __init__(self, filepath: str, mode: str = None):
+    def __init__(self, filepath: str, mode: str = None, pt_regression: bool = False):
         """
         Load dataset from .npz file.
 
         Args:
             filepath: Path to the .npz file containing x, y, mask, weights
             mode: Data loading mode of the dataloader. If mode="match_distributions", weights are set to 1.0
+            pt_regression: Whether to compute jet-level pt for regression tasks (if not pre-computed)
         """
         print(f"Loading data from {filepath}...")
         data = np.load(filepath)
+        self.pt_regression = pt_regression
 
         self.X = torch.from_numpy(data["x"]).float()
         self.y = torch.from_numpy(data["y"]).float().unsqueeze(1)
@@ -147,7 +149,17 @@ class StratifiedJetDataset(Dataset):
             self.jet_eta = torch.from_numpy(data["jet_eta"]).float()
         else:
             print("Warning: Pre-calc jet_pt/eta not found.")
+            print(
+                "Setting jet_pt and jet_eta to ones (will be computed on-the-fly if needed)."
+            )
+            self.jet_pt = torch.ones_like(self.y)
+            self.jet_eta = torch.ones_like(self.y)
 
+        if "gen_pt" in data.files:
+            self.gen_pt = torch.from_numpy(data["gen_pt"]).float()
+        else:
+            print("Warning: gen_pt not found in dataset, setting to ones.")
+            self.gen_pt = torch.ones_like(self.y)
         print(
             f"Data loaded: {self.X.shape[0]} samples, {self.X.shape[1]} constituents, {self.X.shape[2]} features"
         )
@@ -155,10 +167,24 @@ class StratifiedJetDataset(Dataset):
     def __len__(self) -> int:
         return len(self.y)
 
-    def __getitem__(
-        self, idx: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        return self.X[idx], self.y[idx], self.mask[idx], self.weights[idx]
+    def __getitem__(self, idx: int) -> Tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        return (
+            self.X[idx],
+            self.y[idx],
+            self.mask[idx],
+            self.weights[idx],
+            self.jet_pt[idx],
+            self.jet_eta[idx],
+            self.gen_pt[idx],
+        )
 
     @property
     def labels(self) -> np.ndarray:
@@ -176,8 +202,8 @@ class StratifiedJetDataset(Dataset):
         mask = (
             (self.jet_pt >= pt_min)
             & (self.jet_pt <= pt_max)
-            & (self.jet_eta.abs() >= eta_min)
-            & (self.jet_eta.abs() <= eta_max)
+            & (self.jet_eta >= eta_min)
+            & (self.jet_eta <= eta_max)
         )
         return torch.nonzero(mask, as_tuple=True)[0].numpy()
 
@@ -204,6 +230,7 @@ class StratifiedJetDataset(Dataset):
         self.weights = self.weights[valid]
         self.jet_pt = self.jet_pt[valid]
         self.jet_eta = self.jet_eta[valid]
+        self.gen_pt = self.gen_pt[valid]
         print(f"  Kinematic filter: {n_before} → {len(self)} jets kept")
 
 
@@ -1053,32 +1080,16 @@ def _reweight_to_common_target(
     verbose: bool = True,
 ) -> None:
     """
-    Reweight **every** subset so its (pT, eta) distribution matches a
-    single common reference distribution.
-
-    For each subset:
-        weight_i = P(pT,eta | ref) / P(pT,eta | subset)
-
-    Weights are clipped to [0.1, clip_max] and written in-place into
-    each dataset's .weights tensor.
-
-    Args:
-        datasets_and_subsets: List of (StratifiedJetDataset, Subset) pairs.
-        ref_pt: 1-D array of pT values defining the reference distribution.
-        ref_eta: 1-D array of eta values defining the reference distribution.
-        n_bins_pt: Number of pT bins for the 2-D histogram.
-        n_bins_eta: Number of eta bins for the 2-D histogram.
-        max_pt: Upper pT edge for binning.
-        clip_max: Maximum weight after clipping.
-        smooth_sigma: Gaussian smoothing sigma for ratio map (0 = no smoothing).
-        verbose: Print per-subset weight statistics.
+    Reweight EACH CLASS within every subset so its (pT, eta) distribution
+    matches a single common reference distribution.
     """
+    from scipy.ndimage import gaussian_filter
 
     # Fixed bin edges for all subsets
     pt_bins = np.linspace(0, max_pt, n_bins_pt + 1)
     eta_bins = np.linspace(-2.0, 2.0, n_bins_eta + 1)
 
-    # Reference 2-D density histogram
+    # Reference 2-D density histogram (This is your Target)
     H_ref, _, _ = np.histogram2d(
         ref_pt, ref_eta, bins=[pt_bins, eta_bins], density=True
     )
@@ -1086,38 +1097,54 @@ def _reweight_to_common_target(
 
     for dataset, subset in datasets_and_subsets:
         indices = np.array(subset.indices)
-        jet_feats = _compute_jet_features(dataset, indices)
-        pt = jet_feats["pt"]
-        eta = jet_feats["eta"]
+        labels = dataset.labels[indices]
 
-        # Source 2-D density
-        H_src, _, _ = np.histogram2d(pt, eta, bins=[pt_bins, eta_bins], density=True)
-        H_src = np.maximum(H_src, 1e-10)
+        for cls in [0, 1]:
+            # 1. Identify indices for this class
+            cls_mask = labels == cls
+            cls_indices = indices[cls_mask]
 
-        ratio_map = H_ref / H_src
+            if len(cls_indices) == 0:
+                continue
 
-        # Apply Gaussian smoothing to reduce spikiness in low-statistics regions
-        if smooth_sigma > 0:
-            ratio_map = gaussian_filter(ratio_map, sigma=smooth_sigma, mode="nearest")
+            # 2. Compute features ONLY for this class
+            jet_feats = _compute_jet_features(dataset, cls_indices)
+            pt = jet_feats["pt"]
+            eta = jet_feats["eta"]
 
-        # Map weights to individual events
-        pt_idx = np.clip(np.searchsorted(pt_bins, pt) - 1, 0, n_bins_pt - 1)
-        eta_idx = np.clip(np.searchsorted(eta_bins, eta) - 1, 0, n_bins_eta - 1)
-        weights = ratio_map[pt_idx, eta_idx].astype(np.float32)
-        weights = np.clip(weights, 0.1, clip_max)
+            # 3. Compute Source Histogram for THIS CLASS
+            H_src, _, _ = np.histogram2d(
+                pt, eta, bins=[pt_bins, eta_bins], density=True
+            )
+            H_src = np.maximum(H_src, 1e-10)
 
-        # Write in-place
-        dataset.weights[indices] = torch.from_numpy(weights).float().unsqueeze(1)
+            # 4. Calculate Ratio: Reference / Class_Source
+            ratio_map = H_ref / H_src
 
-        if verbose:
-            labels = dataset.labels[indices]
-            for cls, name in [(1, "Signal"), (0, "Background")]:
-                cls_w = weights[labels == cls]
-                if len(cls_w) > 0:
-                    print(
-                        f"    {name}: mean={cls_w.mean():.3f}, "
-                        f"std={cls_w.std():.3f}, max={cls_w.max():.3f}"
-                    )
+            # Apply Gaussian smoothing
+            if smooth_sigma > 0:
+                ratio_map = gaussian_filter(
+                    ratio_map, sigma=smooth_sigma, mode="nearest"
+                )
+
+            # 5. Map weights to individual events of this class
+            pt_idx = np.clip(np.searchsorted(pt_bins, pt) - 1, 0, n_bins_pt - 1)
+            eta_idx = np.clip(np.searchsorted(eta_bins, eta) - 1, 0, n_bins_eta - 1)
+            weights = ratio_map[pt_idx, eta_idx].astype(np.float32)
+            weights = np.clip(weights, 0.1, clip_max)
+
+            # 6. Write in-place to the specific class indices
+            # Note: We must be careful with indexing. cls_indices points to the dataset rows.
+            dataset.weights[cls_indices] = (
+                torch.from_numpy(weights).float().unsqueeze(1)
+            )
+
+            if verbose:
+                cls_name = "Signal" if cls == 1 else "Background"
+                print(
+                    f"    {cls_name}: mean={weights.mean():.3f}, "
+                    f"std={weights.std():.3f}, max={weights.max():.3f}"
+                )
 
 
 def _reweight_bkg_to_signal(
@@ -1245,6 +1272,18 @@ class CombinedJetDataLoader:
         Mode 4 (2D distribution matching), then reweight each dataset's
         background to match its own matched signal distribution.
         Signal weights are kept at 1.0.
+
+    Mode 8 (match_mode='reweight_to_puppi_bkg')
+        Match sizes and class ratios (Mode 2), then reweight every
+        per-class subset (PF sig, PF bkg, PUPPI sig) so its (pT, eta)
+        count distribution matches the PUPPI background.  PUPPI
+        background weights are kept at 1.0.
+
+    Mode 9 (match_mode='reweight_to_puppi_bkg_relative')
+        Mode 8 (reweight in original pT × eta), then replace the first
+        4 constituent features (m, pT, eta, phi) with relative features
+        (delta_m, rel_pT, delta_eta, delta_phi) computed w.r.t. the
+        jet-level 4-vector.
     """
 
     def __init__(
@@ -1269,6 +1308,7 @@ class CombinedJetDataLoader:
         pt_max: float = np.inf,  # Maximum pT for filtering
         eta_min: float = -np.inf,  # Minimum eta for filtering
         eta_max: float = np.inf,  # Maximum eta for filtering
+        pt_regression: bool = False,  # Whether to add a regression target for pT (Mode 9)
     ):
         """
         Initialize the combined data loader.
@@ -1325,12 +1365,16 @@ class CombinedJetDataLoader:
         print("\n" + "=" * 60)
         print("Loading PF Dataset")
         print("=" * 60)
-        self.pf_dataset = StratifiedJetDataset(pf_data_path, mode=match_mode)
+        self.pf_dataset = StratifiedJetDataset(
+            pf_data_path, mode=match_mode, pt_regression=pt_regression
+        )
 
         print("\n" + "=" * 60)
         print("Loading PUPPI Dataset")
         print("=" * 60)
-        self.puppi_dataset = StratifiedJetDataset(puppi_data_path, mode=match_mode)
+        self.puppi_dataset = StratifiedJetDataset(
+            puppi_data_path, mode=match_mode, pt_regression=pt_regression
+        )
 
         print(
             f"\nFiltering datasets to range: pT[{pt_min}, {pt_max}], |eta|[{eta_min}, {eta_max}]"
@@ -1440,6 +1484,26 @@ class CombinedJetDataLoader:
                 max_pt=self.reweight_max_pt,
                 name="PUPPI Val",
             )
+        elif match_mode == "reweight_to_puppi_bkg":
+            print("\n" + "=" * 60)
+            print("MODE 8: Match Sizes/Ratios + Reweight ALL to PUPPI Background")
+            print("=" * 60)
+            self._reweight_to_puppi_bkg()
+
+        elif match_mode == "reweight_to_puppi_bkg_relative":
+            print("\n" + "=" * 60)
+            print("MODE 9: Mode 8 + Convert to Relative Features")
+            print("=" * 60)
+            self._reweight_to_puppi_bkg()
+            self._convert_to_relative_features(self.pf_dataset)
+            self._convert_to_relative_features(self.puppi_dataset)
+
+        # Sync stored indices with the (possibly updated) Subset objects
+        # so that get_pf_loaders / get_puppi_loaders return correct indices.
+        self.train_pf_indices = np.array(self.train_pf.indices)
+        self.val_pf_indices = np.array(self.val_pf.indices)
+        self.train_puppi_indices = np.array(self.train_puppi.indices)
+        self.val_puppi_indices = np.array(self.val_puppi.indices)
 
     def _match_sizes_preserve_ratios(self):
         """Mode 1: Match sizes while preserving original class ratios."""
@@ -1927,6 +1991,223 @@ class CombinedJetDataLoader:
 
         if self.verbose:
             print(f"  {name} Sig->Bkg Reweighting: Mean Sig W={sig_weights.mean():.3f}")
+
+    def _reweight_to_puppi_bkg(self):
+        """
+        MODE 8: Match sizes and class ratios (Mode 2), then reweight
+        every per-class subset so its (pT, eta) count distribution
+        matches the PUPPI background.  PUPPI background weights stay
+        at 1.0.
+
+        Steps:
+            1. Match sizes and class ratios between PF and PUPPI
+               (same as Mode 2).
+            2. Build PUPPI-background count histogram as reference.
+            3. For PF signal, PF background, and PUPPI signal: compute
+               ratio = ref_counts / subset_counts per (eta, pT) bin and
+               write per-event weights in-place.
+        """
+        verbose = self.verbose
+
+        # --- Step 1: match sizes and class ratios (Mode 2) ---
+        print("\nStep 1: Matching sizes and class ratios (Mode 2)...")
+        self._match_sizes_and_ratios()
+
+        # --- Step 2 & 3: reweight to PUPPI background per split ---
+        for split_name, puppi_subset, pf_subset in [
+            ("Training", self.train_puppi, self.train_pf),
+            ("Validation", self.val_puppi, self.val_pf),
+        ]:
+            print(f"\nReweighting {split_name} subsets to PUPPI background...")
+            self._reweight_split_to_puppi_bkg(
+                self.puppi_dataset,
+                puppi_subset,
+                self.pf_dataset,
+                pf_subset,
+                verbose=verbose,
+            )
+
+    def _reweight_split_to_puppi_bkg(
+        self,
+        puppi_dataset: "StratifiedJetDataset",
+        puppi_subset: Subset,
+        pf_dataset: "StratifiedJetDataset",
+        pf_subset: Subset,
+        verbose: bool = True,
+    ) -> None:
+        """
+        For one train/val split: build the PUPPI-background count
+        histogram, then compute per-event weights for PF signal,
+        PF background, and PUPPI signal so they each match that
+        reference.  PUPPI background gets weight = 1.0.
+        """
+        n_bins_pt = self.n_bins_pt
+        n_bins_eta = self.n_bins_eta
+        smooth_sigma = self.smooth_sigma
+
+        # --- Indices and labels ---
+        puppi_idx = np.array(puppi_subset.indices)
+        pf_idx = np.array(pf_subset.indices)
+        puppi_labels = puppi_dataset.labels[puppi_idx]
+        pf_labels = pf_dataset.labels[pf_idx]
+
+        puppi_bkg_idx = puppi_idx[puppi_labels == 0]
+        puppi_sig_idx = puppi_idx[puppi_labels == 1]
+        pf_bkg_idx = pf_idx[pf_labels == 0]
+        pf_sig_idx = pf_idx[pf_labels == 1]
+
+        # --- Jet features ---
+        puppi_bkg_feat = _compute_jet_features(puppi_dataset, puppi_bkg_idx)
+        puppi_sig_feat = _compute_jet_features(puppi_dataset, puppi_sig_idx)
+        pf_bkg_feat = _compute_jet_features(pf_dataset, pf_bkg_idx)
+        pf_sig_feat = _compute_jet_features(pf_dataset, pf_sig_idx)
+
+        # --- Bin edges: use filtering range if finite, else derive from data ---
+        all_pt = np.concatenate(
+            [
+                puppi_bkg_feat["pt"],
+                puppi_sig_feat["pt"],
+                pf_bkg_feat["pt"],
+                pf_sig_feat["pt"],
+            ]
+        )
+        all_eta = np.concatenate(
+            [
+                puppi_bkg_feat["eta"],
+                puppi_sig_feat["eta"],
+                pf_bkg_feat["eta"],
+                pf_sig_feat["eta"],
+            ]
+        )
+        pt_lo = self.pt_min if np.isfinite(self.pt_min) else float(all_pt.min())
+        pt_hi = self.pt_max if np.isfinite(self.pt_max) else float(all_pt.max())
+        eta_lo = self.eta_min if np.isfinite(self.eta_min) else float(all_eta.min())
+        eta_hi = self.eta_max if np.isfinite(self.eta_max) else float(all_eta.max())
+
+        pt_bins = np.linspace(pt_lo, pt_hi, n_bins_pt + 1)
+        eta_bins = np.linspace(eta_lo, eta_hi, n_bins_eta + 1)
+
+        # --- Reference: PUPPI background count histogram (eta × pT) ---
+        ref_hist, _, _ = np.histogram2d(
+            puppi_bkg_feat["eta"],
+            puppi_bkg_feat["pt"],
+            bins=(eta_bins, pt_bins),
+            density=False,
+        )
+
+        # --- Helper: build per-class histograms and compute weights ---
+        def _per_class_weights(feat: dict, ref: np.ndarray) -> np.ndarray:
+            """Return per-event weight array = ref_counts / class_counts."""
+            cls_hist, _, _ = np.histogram2d(
+                feat["eta"],
+                feat["pt"],
+                bins=(eta_bins, pt_bins),
+                density=False,
+            )
+            ratio = np.divide(
+                ref,
+                cls_hist,
+                out=np.zeros_like(cls_hist, dtype=np.float64),
+                where=cls_hist > 0,
+            )
+            if smooth_sigma > 0:
+                ratio = gaussian_filter(ratio, sigma=smooth_sigma)
+            eta_bin_idx = np.clip(
+                np.digitize(feat["eta"], eta_bins) - 1, 0, n_bins_eta - 1
+            )
+            pt_bin_idx = np.clip(np.digitize(feat["pt"], pt_bins) - 1, 0, n_bins_pt - 1)
+            return ratio[eta_bin_idx, pt_bin_idx].astype(np.float32)
+
+        # --- Compute weights for three subsets ---
+        puppi_sig_w = _per_class_weights(puppi_sig_feat, ref_hist)
+        pf_sig_w = _per_class_weights(pf_sig_feat, ref_hist)
+        pf_bkg_w = _per_class_weights(pf_bkg_feat, ref_hist)
+        puppi_bkg_w = np.ones(len(puppi_bkg_idx), dtype=np.float32)
+
+        # --- Write weights in-place ---
+        puppi_dataset.weights[puppi_bkg_idx] = (
+            torch.from_numpy(puppi_bkg_w).float().unsqueeze(1)
+        )
+        puppi_dataset.weights[puppi_sig_idx] = (
+            torch.from_numpy(puppi_sig_w).float().unsqueeze(1)
+        )
+        pf_dataset.weights[pf_bkg_idx] = torch.from_numpy(pf_bkg_w).float().unsqueeze(1)
+        pf_dataset.weights[pf_sig_idx] = torch.from_numpy(pf_sig_w).float().unsqueeze(1)
+
+        if verbose:
+            print(f"  PUPPI Bkg: {len(puppi_bkg_idx)} jets, weight=1.0 (reference)")
+            print(
+                f"  PUPPI Sig: {len(puppi_sig_idx)} jets, "
+                f"mean_w={puppi_sig_w.mean():.3f}, max_w={puppi_sig_w.max():.3f}"
+            )
+            print(
+                f"  PF Bkg:    {len(pf_bkg_idx)} jets, "
+                f"mean_w={pf_bkg_w.mean():.3f}, max_w={pf_bkg_w.max():.3f}"
+            )
+            print(
+                f"  PF Sig:    {len(pf_sig_idx)} jets, "
+                f"mean_w={pf_sig_w.mean():.3f}, max_w={pf_sig_w.max():.3f}"
+            )
+
+    @staticmethod
+    def _convert_to_relative_features(dataset: "StratifiedJetDataset") -> None:
+        """
+        Replace the first 4 constituent features (m, pT, eta, phi) with
+        relative features (delta_m, rel_pT, delta_eta, delta_phi)
+        computed w.r.t. the jet-level 4-vector.  Modifies dataset.X
+        in-place.
+
+        Feature mapping:
+            0: m       → delta_m   = m_const  - m_jet
+            1: pT      → rel_pT    = pT_const / pT_jet
+            2: eta     → delta_eta = eta_const - eta_jet
+            3: phi     → delta_phi = phi_const - phi_jet  (wrapped to [-π, π])
+        """
+        X = dataset.X  # (N, n_const, n_feat)
+        mask = dataset.mask.numpy()  # (N, n_const)
+
+        c_m = X[:, :, 0].numpy()
+        c_pt = X[:, :, 1].numpy()
+        c_eta = X[:, :, 2].numpy()
+        c_phi = X[:, :, 3].numpy()
+
+        # Zero out masked constituents for the jet-level sum
+        c_m_z = np.where(mask, c_m, 0)
+        c_pt_z = np.where(mask, c_pt, 0)
+        c_eta_z = np.where(mask, c_eta, 0)
+        c_phi_z = np.where(mask, c_phi, 0)
+
+        v = vector.array(
+            {
+                "pt": c_pt_z,
+                "eta": c_eta_z,
+                "phi": c_phi_z,
+                "mass": c_m_z,
+            }
+        )
+        j = v.sum(axis=1)  # jet-level 4-vector
+
+        jet_m = np.array(j.mass)[:, None]  # (N, 1)
+        jet_pt = np.array(j.pt)[:, None]
+        jet_eta = np.array(j.eta)[:, None]
+        jet_phi = np.array(j.phi)[:, None]
+
+        delta_m = c_m - jet_m
+        rel_pt = np.where(jet_pt > 0, c_pt / jet_pt, 0.0)
+        delta_eta = c_eta - jet_eta
+        delta_phi = np.arctan2(np.sin(c_phi - jet_phi), np.cos(c_phi - jet_phi))
+
+        # Write back in-place
+        X[:, :, 0] = torch.from_numpy(delta_m).float()
+        X[:, :, 1] = torch.from_numpy(rel_pt).float()
+        X[:, :, 2] = torch.from_numpy(delta_eta).float()
+        X[:, :, 3] = torch.from_numpy(delta_phi).float()
+
+        n_jets = len(X)
+        print(
+            f"  Converted {n_jets} jets to relative features "
+            f"(delta_m, rel_pT, delta_eta, delta_phi)"
+        )
 
     def get_train_loaders(self, shuffle: bool = True) -> Tuple[DataLoader, DataLoader]:
         """
