@@ -361,7 +361,9 @@ def process_batch(
     one_hot_ids = one_hot_encode_l1_puppi(flat_ids, n_classes=5)
     X = np.concatenate([x_ini[..., :-1], one_hot_ids], axis=-1)
 
-    is_pure_label = get_purity_mask_cross_matched(gen_b, l1_jets)
+    is_pure_label, idx_closest_gen = get_purity_mask_cross_matched(
+        gen_b, l1_jets, return_gen_idx=True
+    )
     labels = ak.values_astype(is_pure_label, np.float32)
     Y = ak.to_numpy(ak.flatten(labels, axis=None))
 
@@ -388,9 +390,7 @@ def process_batch(
 
     # Compute gen pT per reco jet: for matched (signal) jets use the
     # matched gen b-quark pT; for unmatched (background) jets use 0.
-    dr_matrix = l1_jets[:, :, None].vector.deltaR(gen_b[:, None, :].vector)
-    idx_closest_gen = ak.argmin(dr_matrix, axis=2)  # (events, n_reco)
-    # Index into gen_b.pt — gives None when no gen particles exist
+    # idx_closest_gen already computed by get_purity_mask_cross_matched.
     gen_pt_lookup = gen_b.pt[idx_closest_gen]
     # Keep only for matched (signal) jets; set background to 0
     gen_pt_per_jet = ak.fill_none(
@@ -555,7 +555,9 @@ def process_batch_for_higgs(
     one_hot_ids = one_hot_encode_l1_puppi(flat_ids, n_classes=5)
     X = np.concatenate([x_ini[..., :-1], one_hot_ids], axis=-1)
 
-    is_pure_label = get_purity_mask_cross_matched(gen_higgs, l1_jets)
+    is_pure_label, idx_closest_gen = get_purity_mask_cross_matched(
+        gen_higgs, l1_jets, return_gen_idx=True
+    )
     labels = ak.values_astype(is_pure_label, np.float32)
     Y = ak.to_numpy(ak.flatten(labels, axis=None))
 
@@ -582,8 +584,7 @@ def process_batch_for_higgs(
 
     # Compute gen pT per reco jet: matched (signal) jets get the
     # matched gen Higgs pT; unmatched (background) jets get 0.
-    dr_matrix = l1_jets[:, :, None].vector.deltaR(gen_higgs[:, None, :].vector)
-    idx_closest_gen = ak.argmin(dr_matrix, axis=2)  # (events, n_reco)
+    # idx_closest_gen already computed by get_purity_mask_cross_matched.
     gen_pt_lookup = gen_higgs.pt[idx_closest_gen]
     gen_pt_per_jet = ak.fill_none(
         ak.where(is_pure_label, gen_pt_lookup, 0.0), 0.0

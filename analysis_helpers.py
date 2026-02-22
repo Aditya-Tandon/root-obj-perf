@@ -65,7 +65,8 @@ def get_purity_mask_one_one(gen_particles, reco_objects, CONFIG=None):
 
     return ak.Array(is_matched_list_gen), ak.Array(is_matched_list_reco)
 
-def get_purity_mask_cross_matched(gen_particles, reco_objects, CONFIG=None):
+def get_purity_mask_cross_matched(gen_particles, reco_objects, CONFIG=None,
+                                   return_gen_idx=False):
 
     if CONFIG is None:
         with open("hh-bbbb-obj-config.json", "r") as config_file:
@@ -92,6 +93,8 @@ def get_purity_mask_cross_matched(gen_particles, reco_objects, CONFIG=None):
         (min_dr_reco_major < CONFIG["matching_cone_size"])
     )
     
+    if return_gen_idx:
+        return pure_cross_matched, idx_closest_gen_for_reco
     return pure_cross_matched
 
 def get_efficiency_mask_hungarian(gen_particles, reco_objects, CONFIG=None):
