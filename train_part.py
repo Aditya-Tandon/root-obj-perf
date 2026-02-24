@@ -82,6 +82,7 @@ def run_training(config_path):
 
     # 4. Initialize Particle Transformer
     pt_regression = cfg["model"].get("pt_regression", False)
+    quantile_regression = cfg["model"].get("quantile_regression", False)
 
     model = ParticleTransformer(
         input_dim=cfg["input_dim"],
@@ -92,11 +93,14 @@ def run_training(config_path):
         dropout=cfg["model"]["dropout"],
         num_classes=cfg["model"]["num_classes"],
         pt_regression=pt_regression,
+        quantile_regression=quantile_regression,
     ).to(device)
     print("Model loaded.")
 
     if pt_regression:
         print("PT regression head enabled in the model.")
+    if quantile_regression:
+        print("Quantile regression enabled in the model.")
 
     # 5. Optimiser & Scheduler
     optimiser = optim.AdamW(
@@ -108,7 +112,6 @@ def run_training(config_path):
     print("Optimiser initialised.")
 
     if restart:
-        # if config["wandb"]["load_from_artifact"]:
         artifact_path = f"{cfg['wandb']['entity']}/{cfg['wandb']['project']}/{cfg['wandb']['artifact_name']}:{cfg['wandb']['ckpt_type']}"
         artifact = wandb.use_artifact(
             artifact_path,
@@ -168,6 +171,7 @@ def run_training(config_path):
 
         train_cls_loss_sum = 0.0
         train_reg_loss_sum = 0.0
+        train_quant_loss_sum = 0.0
         train_outputs = []
         train_labels = []
         n_train_batches = 0
@@ -187,6 +191,7 @@ def run_training(config_path):
                 outputs["classification"] if isinstance(outputs, dict) else outputs
             )
             pt_output = outputs.get("pt", None) if isinstance(outputs, dict) else None
+            quant_output = outputs["quantiles"] if isinstance(outputs, dict) else None
 
             # Classification loss (weighted)
             per_sample_loss = criterion(cls_output, y_batch)
@@ -201,13 +206,29 @@ def run_training(config_path):
                     pt_pred = pt_output.squeeze()[signal_mask]
                     reg_loss = nn.functional.mse_loss(pt_pred, pt_target)
 
-            loss = cls_loss + reg_loss
+            # Quantile regression loss (if enabled, signal-only)
+            quant_loss = torch.tensor(0.0, device=device)
+            if quant_output is not None:
+                quant_loss_fn = QuantileLoss(
+                    quantiles=cfg["model"]["quantiles"], reduction="sum"
+                )
+                signal_mask = y_batch.squeeze() == 1
+                if signal_mask.any():
+                    quant_target = (gen_pt[signal_mask] / jet_pt[signal_mask]).squeeze()
+                    quant_loss = quant_loss_fn(
+                        quant_output[signal_mask], quant_target.unsqueeze(1)
+                    )
+
+            loss = cls_loss + reg_loss + quant_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimiser.step()
 
             train_cls_loss_sum += cls_loss.item()
-            train_reg_loss_sum += reg_loss.item()
+            train_reg_loss_sum += reg_loss.item() if pt_output is not None else 0.0
+            train_quant_loss_sum += (
+                quant_loss.item() if quant_output is not None else 0.0
+            )
             n_train_batches += 1
 
             train_outputs.append(torch.sigmoid(cls_output).detach().cpu().numpy())
@@ -216,7 +237,10 @@ def run_training(config_path):
 
         # --- Train metrics ---
         train_metrics = {
-            "train_loss": (train_cls_loss_sum + train_reg_loss_sum) / n_train_batches,
+            "train_loss": (
+                train_cls_loss_sum + train_reg_loss_sum + train_quant_loss_sum
+            )
+            / n_train_batches,
             "train_cls_loss": train_cls_loss_sum / n_train_batches,
             "train_auc": roc_auc_score(
                 np.concatenate(train_labels), np.concatenate(train_outputs)
@@ -224,12 +248,15 @@ def run_training(config_path):
         }
         if pt_regression:
             train_metrics["train_reg_loss"] = train_reg_loss_sum / n_train_batches
+        if quantile_regression:
+            train_metrics["train_quant_loss"] = train_quant_loss_sum / n_train_batches
 
         # Validation
         model.eval()
         all_preds, all_labels = [], []
         val_cls_loss_sum = 0.0
         val_reg_loss_sum = 0.0
+        val_quant_loss_sum = 0.0
         n_val_batches = 0
 
         with torch.no_grad():
@@ -247,7 +274,9 @@ def run_training(config_path):
                 pt_output = (
                     outputs.get("pt", None) if isinstance(outputs, dict) else None
                 )
-
+                quant_output = (
+                    outputs["quantiles"] if isinstance(outputs, dict) else None
+                )
                 val_cls_loss_sum += criterion(cls_output, y_batch).mean().item()
 
                 if pt_output is not None:
@@ -261,21 +290,34 @@ def run_training(config_path):
                             pt_pred, pt_target
                         ).item()
 
+                if quant_output is not None:
+                    signal_mask = y_batch.squeeze() == 1
+                    if signal_mask.any():
+                        quant_target = (
+                            gen_pt[signal_mask] / jet_pt[signal_mask]
+                        ).squeeze()
+                        val_quant_loss_sum += quant_loss_fn(
+                            quant_output[signal_mask], quant_target.unsqueeze(1)
+                        ).item()
+
                 n_val_batches += 1
                 all_preds.append(torch.sigmoid(cls_output).cpu().numpy())
                 all_labels.append(y_batch.cpu().numpy())
 
         # --- Val metrics ---
         val_metrics = {
-            "val_loss": (val_cls_loss_sum + val_reg_loss_sum) / n_val_batches,
+            "val_loss": (val_cls_loss_sum + val_reg_loss_sum + val_quant_loss_sum)
+            / n_val_batches,
             "val_cls_loss": val_cls_loss_sum / n_val_batches,
+            "val_quant_loss": val_quant_loss_sum / n_val_batches,
             "val_auc": roc_auc_score(
                 np.concatenate(all_labels), np.concatenate(all_preds)
             ),
         }
         if pt_regression:
             val_metrics["val_reg_loss"] = val_reg_loss_sum / n_val_batches
-
+        if quantile_regression:
+            val_metrics["val_quant_loss"] = val_quant_loss_sum / n_val_batches
         # Logging
         auc_score = val_metrics["val_auc"]
         print(
@@ -361,6 +403,9 @@ def run_training(config_path):
     )
     final_artifact.add_file(f"final_model_{wandb.run.id}.pth")
     wandb.log_artifact(final_artifact, aliases=["final"])
+    print("Final model saved and logged to W&B.")
+    wandb.finish()
+    print("Run finished.")
 
 
 if __name__ == "__main__":
@@ -368,3 +413,23 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="config_part.json")
     args = parser.parse_args()
     run_training(args.config)
+
+
+class QuantileLoss(nn.Module):
+    def __init__(self, quantiles, reduction="sum"):
+        super(QuantileLoss, self).__init__()
+        self.quantiles = quantiles
+        self.reduction = reduction
+
+    def forward(self, preds, target):
+        losses = []
+        for i, q in enumerate(self.quantiles):
+            delta = target[:, 0] - preds[:, i]
+            loss = torch.max(q * delta, (q - 1) * delta)
+            losses.append(loss)
+        loss = torch.sum(torch.stack(losses, dim=1), dim=-1)
+        if self.reduction == "sum":
+            return torch.sum(loss)
+        elif self.reduction == "mean":
+            return torch.mean(loss)
+        return loss

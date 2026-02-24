@@ -265,6 +265,21 @@ class ClassAttentionBlock(nn.Module):
         return x
 
 
+class RegressionHead(nn.Module):
+    def __init__(self, embed_dim, n_out=1, num_layers=2, dropout=0.1):
+        super().__init__()
+        layers = []
+        for _ in range(num_layers - 1):
+            layers.append(nn.Linear(embed_dim, embed_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+        layers.append(nn.Linear(embed_dim, n_out))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+
 class ParticleTransformer(nn.Module):
     def __init__(
         self,
@@ -279,6 +294,7 @@ class ParticleTransformer(nn.Module):
         num_classes=1,
         use_batch_norm=True,  # Set to False for small batch overfit tests
         pt_regression=False,  # If True, also output a regression head for pt prediction
+        quantile_regression=False,  # If True, also output a quantile regression head
     ):
         super().__init__()
 
@@ -324,14 +340,20 @@ class ParticleTransformer(nn.Module):
         # Regression Head (if pt_regression is True)
         pt_reg_layers = []
         if pt_regression:
-            for _ in range(num_reg_layers - 1):
-                pt_reg_layers.append(nn.Linear(embed_dim, embed_dim))
-                pt_reg_layers.append(nn.ReLU())
-                pt_reg_layers.append(nn.Dropout(dropout))
-            pt_reg_layers.append(nn.Linear(embed_dim, 1))
-            self.pt_head = nn.Sequential(*pt_reg_layers)
+            self.pt_head = RegressionHead(
+                embed_dim, num_layers=num_reg_layers, dropout=dropout
+            )
         else:
             self.pt_head = None
+
+        # Quantile Regression Head (if quantile_regression is True)
+        quant_reg_layers = []
+        if quantile_regression:
+            self.quant_head = RegressionHead(
+                embed_dim, n_out=2, num_layers=num_reg_layers, dropout=dropout
+            )
+        else:
+            self.quant_head = None
 
         # Init weights
         nn.init.trunc_normal_(self.cls_token, std=0.02)
@@ -388,4 +410,7 @@ class ParticleTransformer(nn.Module):
         if self.pt_head is not None:
             pt_output = self.pt_head(cls_output)
             outputs["pt"] = pt_output
+        if self.quant_head is not None:
+            quant_output = self.quant_head(cls_output)
+            outputs["quantiles"] = quant_output
         return outputs
