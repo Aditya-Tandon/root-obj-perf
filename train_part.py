@@ -17,6 +17,24 @@ from warmup_cosine_lr import WarmupCosineSchedulerWithRestarts
 torch.manual_seed(42)
 np.random.seed(42)
 
+class QuantileLoss(nn.Module):
+    def __init__(self, quantiles, reduction="sum"):
+        super(QuantileLoss, self).__init__()
+        self.quantiles = quantiles
+        self.reduction = reduction
+
+    def forward(self, preds, target):
+        losses = []
+        for i, q in enumerate(self.quantiles):
+            delta = target[:, 0] - preds[:, i]
+            loss = torch.max(q * delta, (q - 1) * delta)
+            losses.append(loss)
+        loss = torch.sum(torch.stack(losses, dim=1), dim=-1)
+        if self.reduction == "sum":
+            return torch.sum(loss)
+        elif self.reduction == "mean":
+            return torch.mean(loss)
+        return loss
 
 # --- Training Helper ---
 def run_training(config_path):
@@ -415,21 +433,3 @@ if __name__ == "__main__":
     run_training(args.config)
 
 
-class QuantileLoss(nn.Module):
-    def __init__(self, quantiles, reduction="sum"):
-        super(QuantileLoss, self).__init__()
-        self.quantiles = quantiles
-        self.reduction = reduction
-
-    def forward(self, preds, target):
-        losses = []
-        for i, q in enumerate(self.quantiles):
-            delta = target[:, 0] - preds[:, i]
-            loss = torch.max(q * delta, (q - 1) * delta)
-            losses.append(loss)
-        loss = torch.sum(torch.stack(losses, dim=1), dim=-1)
-        if self.reduction == "sum":
-            return torch.sum(loss)
-        elif self.reduction == "mean":
-            return torch.mean(loss)
-        return loss
