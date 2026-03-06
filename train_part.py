@@ -17,6 +17,8 @@ from warmup_cosine_lr import WarmupCosineSchedulerWithRestarts
 torch.manual_seed(42)
 np.random.seed(42)
 
+QREG_SCALE_FAC = 0.01
+
 class QuantileLoss(nn.Module):
     def __init__(self, quantiles, reduction="sum"):
         super(QuantileLoss, self).__init__()
@@ -237,7 +239,7 @@ def run_training(config_path):
                         quant_output[signal_mask], quant_target.unsqueeze(1)
                     )
 
-            loss = cls_loss + reg_loss + quant_loss
+            loss = cls_loss + reg_loss + QREG_SCALE_FAC * quant_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimiser.step()
@@ -324,7 +326,7 @@ def run_training(config_path):
 
         # --- Val metrics ---
         val_metrics = {
-            "val_loss": (val_cls_loss_sum + val_reg_loss_sum + val_quant_loss_sum)
+            "val_loss": (val_cls_loss_sum + val_reg_loss_sum + QREG_SCALE_FAC * val_quant_loss_sum)
             / n_val_batches,
             "val_cls_loss": val_cls_loss_sum / n_val_batches,
             "val_quant_loss": val_quant_loss_sum / n_val_batches,

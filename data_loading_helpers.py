@@ -47,6 +47,8 @@ def load_and_prepare_data(
         }
         events[prefix] = ak.zip(field_map)
 
+    events = events[collections_to_load]
+
     print("Creating 4-vector objects...")
     for prefix in collections_to_load:
         if prefix in events.fields and "pt" in events[prefix].fields:
@@ -193,6 +195,75 @@ def select_gen_higgs(events):
     is_higgs = events.GenPart.pdgId == 25
     print(f"Found {ak.sum(ak.num(events.GenPart[is_higgs]))} Higgs bosons.")
     return events.GenPart[is_higgs]
+
+
+def select_gen_quarks_gluons(events, config=None):
+    """
+    Selects gen-level quarks (u, d, s, c, b: |pdgId| 1-5) and gluons (pdgId 21)
+    from the GenPart collection. Applies kinematic cuts from the gen config section.
+    Used for matching clustered jets in QCD background samples.
+    """
+    gen = events.GenPart
+    abs_pdg = abs(gen.pdgId)
+    is_quark_or_gluon = ((abs_pdg >= 1) & (abs_pdg <= 5)) | (abs_pdg == 21)
+    gen_partons = gen[is_quark_or_gluon]
+
+    if config is not None:
+        pt_cut = config["gen"]["pt_cut"]
+        eta_cut = config["gen"]["eta_cut"]
+        gen_partons = gen_partons[
+            (gen_partons.pt > pt_cut) & (abs(gen_partons.eta) < eta_cut)
+        ]
+
+    n_total = ak.sum(ak.num(gen_partons))
+    print(f"  Selected {n_total} gen quarks/gluons after cuts")
+    return gen_partons
+
+
+def select_gen_b_quarks_by_status(events, config=None):
+    """
+    Selects gen-level b-quarks (|pdgId| == 5) from the GenPart collection
+    using statusFlags bits rather than requiring a Higgs mother.
+
+    Requires:
+      - isLastCopy       (bit 13)  — final copy in the parton shower
+      - fromHardProcess  (bit  8)  — from the hard scattering process
+        Commented out right now 
+
+    This is appropriate for QCD samples where b-quarks do not come from Higgs
+    but we still want to identify "real" gen b-quark jets for labelling.
+
+    Parameters
+    ----------
+    events : awkward.Array
+        Events containing a GenPart collection with statusFlags field.
+    config : dict, optional
+        If provided, applies pT and eta cuts from config["gen"].
+
+    Returns
+    -------
+    gen_b_quarks : awkward.Array
+        Selected gen b-quarks.
+    """
+    gen = events.GenPart
+    abs_pdg = abs(gen.pdgId)
+
+    is_b = abs_pdg == 5
+    is_last_copy = (gen.statusFlags & (1 << 13)) > 0       # bit 13
+    # from_hard_process = (gen.statusFlags & (1 << 8)) > 0    # bit 8
+
+    gen_b_quarks = gen[is_b & is_last_copy]
+
+    if config is not None:
+        pt_cut = config["gen"]["pt_cut"]
+        eta_cut = config["gen"]["eta_cut"]
+        gen_b_quarks = gen_b_quarks[
+            (gen_b_quarks.pt > pt_cut) & (abs(gen_b_quarks.eta) < eta_cut)
+        ]
+
+    n_total = ak.sum(ak.num(gen_b_quarks))
+    print(f"  Selected {n_total} gen b-quarks (isLastCopy & fromHardProcess) after cuts")
+    return gen_b_quarks
 
 
 def apply_custom_cuts(reco_jets, config, key, kinematic_only=False, return_jets=True):
