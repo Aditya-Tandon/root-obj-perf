@@ -659,6 +659,7 @@ def process_qcd_batch(
     Y : np.ndarray, shape (n_jets,)  — 1 for b-matched, 0 otherwise
     particle_mask : np.ndarray, shape (n_jets, n_constituents)
     qcd_weights_per_jet : np.ndarray, shape (n_jets,)
+    gen_pt_per_jet : np.ndarray, shape (n_jets,)  — pT of matched gen b-quark for signal jets, 0 for background
     """
     import uproot
 
@@ -693,7 +694,7 @@ def process_qcd_batch(
             for start in range(0, total_events, chunk_size)
         ]
 
-    chunk_X, chunk_Y, chunk_mask, chunk_w = [], [], [], []
+    chunk_X, chunk_Y, chunk_mask, chunk_w, chunk_gen_pt = [], [], [], [], []
 
     for start, stop in chunk_boundaries:
         chunk_cfg = dict(config)
@@ -746,7 +747,9 @@ def process_qcd_batch(
         # --- Cross-match to gen b-quarks ---
         # Jets matched to a gen b-quark → signal (y=1)
         # Unmatched jets → background (y=0)
-        is_b_matched = get_purity_mask_cross_matched(gen_b_quarks, l1_jets)
+        is_b_matched, idx_closest_gen = get_purity_mask_cross_matched(
+            gen_b_quarks, l1_jets, return_gen_idx=True
+        )
         labels_flat = ak.to_numpy(
             ak.flatten(ak.values_astype(is_b_matched, np.float32), axis=None)
         )
@@ -754,6 +757,15 @@ def process_qcd_batch(
         X = X[valid_jets]
         labels_flat = labels_flat[valid_jets]
         particle_mask = particle_mask[valid_jets]
+
+        # Compute gen pT per reco jet (same logic as process_batch):
+        # b-matched jets → gen b-quark pT, unmatched → 0
+        gen_pt_lookup = gen_b_quarks.pt[idx_closest_gen]
+        gen_pt_per_jet = ak.fill_none(
+            ak.where(is_b_matched, gen_pt_lookup, 0.0), 0.0
+        )
+        gen_pt_flat = ak.to_numpy(ak.flatten(gen_pt_per_jet, axis=1))
+        gen_pt_flat = gen_pt_flat[valid_jets]
 
         n_sig = int((labels_flat == 1.0).sum())
         n_bkg = int((labels_flat == 0.0).sum())
@@ -768,6 +780,7 @@ def process_qcd_batch(
             chunk_Y.append(labels_flat)
             chunk_mask.append(particle_mask)
             chunk_w.append(np.full(n_total, qcd_weight, dtype=np.float32))
+            chunk_gen_pt.append(gen_pt_flat)
 
         # Free memory before next chunk
         del events, l1_jets, matched_cands, gen_b_quarks
@@ -779,6 +792,7 @@ def process_qcd_batch(
             np.empty(0, dtype=np.float32),
             np.empty((0, n_constituents), dtype=bool),
             np.empty(0, dtype=np.float32),
+            np.empty(0, dtype=np.float32),
         )
 
     return (
@@ -786,6 +800,7 @@ def process_qcd_batch(
         np.concatenate(chunk_Y, axis=0),
         np.concatenate(chunk_mask, axis=0),
         np.concatenate(chunk_w, axis=0),
+        np.concatenate(chunk_gen_pt, axis=0),
     )
 
 
@@ -1009,7 +1024,7 @@ def generate_dataset_with_qcd_background(
     print("=" * 60)
 
     qcd_config = config["QCD_background"]
-    all_X_qcd, all_y_qcd, all_masks_qcd, all_qcd_weights = [], [], [], []
+    all_X_qcd, all_y_qcd, all_masks_qcd, all_qcd_weights, all_gen_pt_qcd = [], [], [], [], []
 
     for bin_name, bin_cfg in qcd_config.items():
         print(f"\n--- QCD bin: {bin_name}  (weight={bin_cfg['weight']}) ---")
@@ -1025,7 +1040,7 @@ def generate_dataset_with_qcd_background(
             qcd_cfg["tree_name"] = bin_cfg["tree_name"]
             qcd_cfg["max_events"] = bin_cfg["max_events"]
 
-            X_chunk, y_chunk, mask_chunk, w_chunk = process_qcd_batch(
+            X_chunk, y_chunk, mask_chunk, w_chunk, gen_pt_chunk = process_qcd_batch(
                 config=qcd_cfg,
                 qcd_weight=bin_cfg["weight"],
                 collections_to_load=coll_list,
@@ -1040,11 +1055,12 @@ def generate_dataset_with_qcd_background(
                 all_y_qcd.append(y_chunk)
                 all_masks_qcd.append(mask_chunk)
                 all_qcd_weights.append(w_chunk)
+                all_gen_pt_qcd.append(gen_pt_chunk)
                 n_sig_chunk = int((y_chunk == 1).sum())
                 n_bkg_chunk = int((y_chunk == 0).sum())
                 print(f"  QCD jets in batch: {len(X_chunk)} "
                       f"({n_sig_chunk} b-signal, {n_bkg_chunk} background)")
-            del X_chunk, y_chunk, mask_chunk, w_chunk  # free memory before next file
+            del X_chunk, y_chunk, mask_chunk, w_chunk, gen_pt_chunk  # free memory before next file
     
     print(f"\nFinished processing QCD bins. Combining data...")
     X_qcd = np.concatenate(all_X_qcd, axis=0)
@@ -1059,6 +1075,9 @@ def generate_dataset_with_qcd_background(
     qcd_weights = np.concatenate(all_qcd_weights, axis=0)
     del all_qcd_weights
     print(f"Deleted intermediate QCD weights to free memory.")
+    gen_pt_qcd = np.concatenate(all_gen_pt_qcd, axis=0)
+    del all_gen_pt_qcd
+    print(f"Deleted intermediate QCD gen_pt to free memory.")
 
     n_qcd_sig = int((Y_qcd == 1).sum())
     n_qcd_bkg = int((Y_qcd == 0).sum())
@@ -1078,7 +1097,7 @@ def generate_dataset_with_qcd_background(
     final_y = np.concatenate([Y_sig, Y_qcd], axis=0)
     final_mask = np.concatenate([mask_sig, mask_qcd], axis=0)
     final_gen_pt = np.concatenate(
-        [gen_pt_sig, np.zeros(len(Y_qcd), dtype=np.float32)], axis=0
+        [gen_pt_sig, gen_pt_qcd], axis=0
     )
 
     # Per-jet sample weights:
