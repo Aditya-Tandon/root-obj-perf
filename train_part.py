@@ -17,7 +17,10 @@ from warmup_cosine_lr import WarmupCosineSchedulerWithRestarts
 torch.manual_seed(42)
 np.random.seed(42)
 
-QREG_SCALE_FAC = 0.01
+QREG_SCALE_FAC = 0.005
+VAL_EVERY_N_EPOCHS = 10
+torch.backends.cuda.matmul.allow_tf32 = True
+print("TF32 matmul enabled for faster training on compatible GPUs.")
 
 class QuantileLoss(nn.Module):
     def __init__(self, quantiles, reduction="sum"):
@@ -75,6 +78,7 @@ def run_training(config_path):
         match_mode=cfg["training"]["data"]["match_mode"],
         num_workers=cfg["training"]["data"]["num_workers"],
         random_state=42,
+        use_dataset=cfg["training"]["data"].get("use_dataset", "both"),
     )
     if cfg["training"]["data"]["use_dataset"] == "pf":
         print("\nUsing PF dataset for training.")
@@ -173,7 +177,8 @@ def run_training(config_path):
     train_labels_tensor = torch.from_numpy(train_labels).float()
     num_neg = torch.sum(train_labels_tensor == 0)
     num_pos = torch.sum(train_labels_tensor == 1)
-    pos_weight = (num_neg / num_pos).clone().detach().to(device)
+    # pos_weight = (num_neg / num_pos).clone().detach().to(device)
+    pos_weight = torch.tensor(5.0, device=device)
     # Use reduction='none' to apply per-sample kinematic weights
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
     print(f"Criterion initialised with pos_weight: {pos_weight.item():.4f}")
@@ -194,16 +199,17 @@ def run_training(config_path):
         train_quant_loss_sum = 0.0
         train_outputs = []
         train_labels = []
+        train_qcd_weights = []
         n_train_batches = 0
 
-        for X_batch, y_batch, mask_batch, weights, jet_pt, _, gen_pt in train_loader:
+        for X_batch, y_batch, mask_batch, weights, jet_pt, _, gen_pt, qcd_weights in train_loader:
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
             mask_batch = mask_batch.to(device)
             weights = weights.to(device)
             jet_pt = jet_pt.to(device)
             gen_pt = gen_pt.to(device)
-
+            qcd_weights = qcd_weights.to(device)
             optimiser.zero_grad()
 
             outputs = model(X_batch, particle_mask=mask_batch)
@@ -223,7 +229,7 @@ def run_training(config_path):
                 signal_mask = y_batch.squeeze() == 1
                 if signal_mask.any():
                     pt_target = (gen_pt[signal_mask] / jet_pt[signal_mask]).squeeze()
-                    pt_pred = pt_output.squeeze()[signal_mask]
+                    pt_pred = pt_output[signal_mask].squeeze()
                     reg_loss = nn.functional.mse_loss(pt_pred, pt_target)
 
             # Quantile regression loss (if enabled, signal-only)
@@ -234,10 +240,9 @@ def run_training(config_path):
                 )
                 signal_mask = y_batch.squeeze() == 1
                 if signal_mask.any():
-                    quant_target = (gen_pt[signal_mask] / jet_pt[signal_mask]).squeeze()
-                    quant_loss = quant_loss_fn(
-                        quant_output[signal_mask], quant_target.unsqueeze(1)
-                    )
+                    quant_preds = quant_output[signal_mask]
+                    quant_target = (gen_pt[signal_mask] / jet_pt[signal_mask]).reshape(1, quant_preds.shape[0])
+                    quant_loss = quant_loss_fn(quant_preds, quant_target)
 
             loss = cls_loss + reg_loss + QREG_SCALE_FAC * quant_loss
             loss.backward()
@@ -253,6 +258,7 @@ def run_training(config_path):
 
             train_outputs.append(torch.sigmoid(cls_output).detach().cpu().numpy())
             train_labels.append(y_batch.cpu().numpy())
+            train_qcd_weights.append(qcd_weights.detach().cpu().numpy())
         scheduler.step()
 
         # --- Train metrics ---
@@ -263,7 +269,7 @@ def run_training(config_path):
             / n_train_batches,
             "train_cls_loss": train_cls_loss_sum / n_train_batches,
             "train_auc": roc_auc_score(
-                np.concatenate(train_labels), np.concatenate(train_outputs)
+                np.concatenate(train_labels), np.concatenate(train_outputs), sample_weight=np.concatenate(train_qcd_weights)
             ),
         }
         if pt_regression:
@@ -273,19 +279,27 @@ def run_training(config_path):
 
         # Validation
         model.eval()
-        all_preds, all_labels = [], []
+        val_metrics = {
+                "val_loss": None,
+                "val_cls_loss": None,
+                "val_quant_loss": None,
+                "val_auc": None,
+            }
+        auc_score=0.0
+        all_preds, all_labels, all_qcd_weights = [], [], []
         val_cls_loss_sum = 0.0
         val_reg_loss_sum = 0.0
         val_quant_loss_sum = 0.0
         n_val_batches = 0
 
         with torch.no_grad():
-            for X_batch, y_batch, mask_batch, _, jet_pt, _, gen_pt in val_loader:
+            for X_batch, y_batch, mask_batch, _, jet_pt, _, gen_pt, qcd_weights in val_loader:
                 X_batch = X_batch.to(device)
                 y_batch = y_batch.to(device)
                 mask_batch = mask_batch.to(device)
                 jet_pt = jet_pt.to(device)
                 gen_pt = gen_pt.to(device)
+                qcd_weights = qcd_weights.to(device)
 
                 outputs = model(X_batch, particle_mask=mask_batch)
                 cls_output = (
@@ -305,7 +319,7 @@ def run_training(config_path):
                         pt_target = (
                             gen_pt[signal_mask] / jet_pt[signal_mask]
                         ).squeeze()
-                        pt_pred = pt_output.squeeze()[signal_mask]
+                        pt_pred = pt_output[signal_mask].squeeze()
                         val_reg_loss_sum += nn.functional.mse_loss(
                             pt_pred, pt_target
                         ).item()
@@ -313,17 +327,14 @@ def run_training(config_path):
                 if quant_output is not None:
                     signal_mask = y_batch.squeeze() == 1
                     if signal_mask.any():
-                        quant_target = (
-                            gen_pt[signal_mask] / jet_pt[signal_mask]
-                        ).squeeze()
-                        val_quant_loss_sum += quant_loss_fn(
-                            quant_output[signal_mask], quant_target.unsqueeze(1)
-                        ).item()
+                        quant_preds = quant_output[signal_mask]
+                        quant_target = (gen_pt[signal_mask] / jet_pt[signal_mask]).reshape(1, quant_preds.shape[0])
+                        val_quant_loss_sum += quant_loss_fn(quant_preds, quant_target).item()
 
                 n_val_batches += 1
                 all_preds.append(torch.sigmoid(cls_output).cpu().numpy())
                 all_labels.append(y_batch.cpu().numpy())
-
+                all_qcd_weights.append(qcd_weights.detach().cpu().numpy())
         # --- Val metrics ---
         val_metrics = {
             "val_loss": (val_cls_loss_sum + val_reg_loss_sum + QREG_SCALE_FAC * val_quant_loss_sum)
@@ -331,7 +342,7 @@ def run_training(config_path):
             "val_cls_loss": val_cls_loss_sum / n_val_batches,
             "val_quant_loss": val_quant_loss_sum / n_val_batches,
             "val_auc": roc_auc_score(
-                np.concatenate(all_labels), np.concatenate(all_preds)
+                np.concatenate(all_labels), np.concatenate(all_preds), sample_weight=np.concatenate(all_qcd_weights)
             ),
         }
         if pt_regression:
@@ -344,6 +355,7 @@ def run_training(config_path):
             f"Epoch {epoch+1} | Train Loss: {train_metrics['train_loss']:.4f} | "
             f"Val Loss: {val_metrics['val_loss']:.4f} | Val AUC: {auc_score:.4f}"
         )
+
         epoch_metrics = {
             "epoch": epoch + 1,
             **train_metrics,
@@ -370,7 +382,7 @@ def run_training(config_path):
             best_artifact = wandb.Artifact(
                 "best_model",
                 type="model",
-                description=f"Best model with AUC: {best_auc:.4f}",
+                description=f"Best model with AUC: {best_auc:.4f} at epoch {epoch+1}",
                 metadata={"epoch": epoch + 1, "val_auc": best_auc, "config": cfg},
             )
             best_artifact.add_file(f"best_part_model_{wandb.run.id}.pth")
@@ -413,7 +425,7 @@ def run_training(config_path):
             "val_loss": val_metrics["val_loss"],
             "val_auc": val_metrics["val_auc"],
         },
-        f"final_model_{wandb.run.id}.pth",
+        f"final_model_{wandb.run.id}.pth at epoch {num_epochs} with AUC: {auc_score:.4f}",
     )
     final_artifact = wandb.Artifact(
         "final_model",
