@@ -17,7 +17,8 @@ from warmup_cosine_lr import WarmupCosineSchedulerWithRestarts
 torch.manual_seed(42)
 np.random.seed(42)
 
-QREG_SCALE_FAC = 0.005
+REG_SCALE_FAC = 0.5
+QREG_SCALE_FAC = 0.5
 VAL_EVERY_N_EPOCHS = 10
 torch.backends.cuda.matmul.allow_tf32 = True
 print("TF32 matmul enabled for faster training on compatible GPUs.")
@@ -178,7 +179,7 @@ def run_training(config_path):
     num_neg = torch.sum(train_labels_tensor == 0)
     num_pos = torch.sum(train_labels_tensor == 1)
     # pos_weight = (num_neg / num_pos).clone().detach().to(device)
-    pos_weight = torch.tensor(5.0, device=device)
+    pos_weight = torch.tensor(cfg["training"]["pos_weight"], device=device)
     # Use reduction='none' to apply per-sample kinematic weights
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
     print(f"Criterion initialised with pos_weight: {pos_weight.item():.4f}")
@@ -236,7 +237,7 @@ def run_training(config_path):
             quant_loss = torch.tensor(0.0, device=device)
             if quant_output is not None:
                 quant_loss_fn = QuantileLoss(
-                    quantiles=cfg["model"]["quantiles"], reduction="sum"
+                    quantiles=cfg["model"]["quantiles"], reduction="mean"
                 )
                 signal_mask = y_batch.squeeze() == 1
                 if signal_mask.any():
@@ -244,7 +245,7 @@ def run_training(config_path):
                     quant_target = (gen_pt[signal_mask] / jet_pt[signal_mask]).reshape(1, quant_preds.shape[0])
                     quant_loss = quant_loss_fn(quant_preds, quant_target)
 
-            loss = cls_loss + reg_loss + QREG_SCALE_FAC * quant_loss
+            loss = cls_loss + REG_SCALE_FAC * reg_loss + QREG_SCALE_FAC * quant_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimiser.step()
@@ -264,7 +265,7 @@ def run_training(config_path):
         # --- Train metrics ---
         train_metrics = {
             "train_loss": (
-                train_cls_loss_sum + train_reg_loss_sum + train_quant_loss_sum
+                train_cls_loss_sum + REG_SCALE_FAC * train_reg_loss_sum + QREG_SCALE_FAC * train_quant_loss_sum
             )
             / n_train_batches,
             "train_cls_loss": train_cls_loss_sum / n_train_batches,
@@ -337,7 +338,7 @@ def run_training(config_path):
                 all_qcd_weights.append(qcd_weights.detach().cpu().numpy())
         # --- Val metrics ---
         val_metrics = {
-            "val_loss": (val_cls_loss_sum + val_reg_loss_sum + QREG_SCALE_FAC * val_quant_loss_sum)
+            "val_loss": (val_cls_loss_sum + REG_SCALE_FAC * val_reg_loss_sum + QREG_SCALE_FAC * val_quant_loss_sum)
             / n_val_batches,
             "val_cls_loss": val_cls_loss_sum / n_val_batches,
             "val_quant_loss": val_quant_loss_sum / n_val_batches,
