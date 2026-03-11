@@ -156,35 +156,51 @@ class ParticleAttentionBlock(nn.Module):
             .reshape(B, N, 3, self.num_heads, C // self.num_heads)
             .permute(2, 0, 3, 1, 4)  # (3, B, Heads, N, Head_Dim=C//Heads)
         )
-        q, k, v = qkv[0], qkv[1], qkv[2]  # (B, Heads, N, Head_Dim)
+        q, k, v = qkv[0], qkv[1], qkv[2]
 
-        # Dot product attention
-        attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, Heads, N, N)
-        if particle_mask is not None:
-            attn_mask = particle_mask.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, N)
-            attn = attn.masked_fill(~attn_mask, float("-inf"))
-
-        # ADD PAIRWISE BIAS
+        # Construct the Fused Bias Mask for SDPA
         if u_ij is not None:
-            # Project u_ij to (B, N, N, Heads) then permute to (B, Heads, N, N)
-            pair_bias = self.pair_proj(u_ij).permute(0, 3, 1, 2)
-            attn = attn + pair_bias
+            # (B, Heads, N, N)
+            fused_mask = self.pair_proj(u_ij).permute(0, 3, 1, 2) 
+        else:
+            fused_mask = torch.zeros((B, self.num_heads, N, N), device=x.device, dtype=x.dtype)
 
-        attn = attn.softmax(dim=-1)
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        if particle_mask is not None:
+            # SDPA treats float('-inf') as masked out, and adds standard floats as bias
+            bool_mask = particle_mask.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, N)
+            fused_mask = fused_mask.masked_fill(~bool_mask, float("-inf"))
+
+        # with torch.profiler.profile(
+        #     activities=[
+        #         torch.profiler.ProfilerActivity.CPU,
+        #         torch.profiler.ProfilerActivity.CUDA,
+        #     ],
+        #     record_shapes=True
+        # ) as prof:
+        x = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=fused_mask,
+            dropout_p=self.attn_drop.p if self.training else 0.0,
+            scale=self.scale
+        )
+
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.attn_drop(x)
         x = x + residual
 
-        # --- 2. MLP ---
         residual = x
         x = self.norm2(x)
         x = self.mlp(x)
         x = x + residual
 
+        # # Isolate the SDPA dispatch calls in the profiler trace
+        # events = prof.key_averages()
+        # for event in events:
+        #     if "scaled_dot_product" in event.key:
+        #         print(f"Executed C++ Kernel: {event.key}")
+
         return x
-
-
 class ClassAttentionBlock(nn.Module):
     """
     Transformer Block for Class Token attention.
@@ -196,7 +212,8 @@ class ClassAttentionBlock(nn.Module):
         self.num_heads = num_heads
         self.scale = (embed_dim // num_heads) ** -0.5
 
-        self.qkv = nn.Linear(embed_dim, embed_dim * 3, bias=False)
+        self.q = nn.Linear(embed_dim, embed_dim, bias=False)  # Q for CLS token only
+        self.kv = nn.Linear(embed_dim, embed_dim * 2, bias=False)
         self.proj = nn.Linear(embed_dim, embed_dim)
         self.attn_drop = nn.Dropout(dropout)
 
@@ -217,45 +234,63 @@ class ClassAttentionBlock(nn.Module):
         # particle_mask: (B, N) - Mask for valid particles
 
         B, N_plus_1, C = x.shape
-        N = N_plus_1 - 1
 
         # --- 1. Attention ---
         residual = x
-        x = self.norm1(x)
+        x_norm = self.norm1(x)
 
-        qkv = (
-            self.qkv(x)
-            .reshape(B, N_plus_1, 3, self.num_heads, C // self.num_heads)
-            .permute(2, 0, 3, 1, 4)  # (3, B, Heads, N+1, Head_Dim=C//Heads)
+        # Compute Q ONLY for the CLS token
+        x_cls_norm = x_norm[:, 0:1, :]
+        q_cls = (
+            self.q(x_cls_norm)
+            .reshape(B, 1, self.num_heads, C // self.num_heads)
+            .transpose(1, 2)
+        ) # (B, Heads, 1, Head_Dim)
+
+        # Compute K and V for all tokens
+        kv = (
+            self.kv(x_norm)
+            .reshape(B, N_plus_1, 2, self.num_heads, C // self.num_heads)
+            .permute(2, 0, 3, 1, 4)
         )
-        q, k, v = qkv[0], qkv[1], qkv[2]  # (B, Heads, N+1, Head_Dim)
-
-        # Only CLS token (index 0) attends to others
-        q_cls = q[:, :, 0:1, :]  # (B, Heads, 1, Head_Dim)
-        attn = (q_cls @ k.transpose(-2, -1)) * self.scale  # (B, Heads, 1, N+1)
+        k, v = kv[0], kv[1] # (B, Heads, N+1, Head_Dim)
 
         if particle_mask is not None:
-            attn_mask = torch.cat(
-                [
-                    torch.ones(
-                        (B, 1, 1, 1),
-                        dtype=particle_mask.dtype,
-                        device=particle_mask.device,
-                    ),
-                    particle_mask.unsqueeze(1).unsqueeze(2),
-                ],
-                dim=-1,
-            )  # (B, 1, 1, N+1)
-            attn = attn.masked_fill(~attn_mask, float("-inf"))
+            cls_mask = torch.ones((B, 1), dtype=torch.bool, device=x.device)
+            full_mask = torch.cat([cls_mask, particle_mask], dim=1)
+            attn_mask = full_mask.unsqueeze(1).unsqueeze(2)
+            # attn_mask = torch.zeros_like(k[..., 0]).masked_fill(~attn_mask, float("-inf"))
+        else:
+            attn_mask = None
 
-        attn = attn.softmax(dim=-1)
-        x_cls = (attn @ v).transpose(1, 2).reshape(B, 1, C)  # (B, 1, C)
+        # with torch.profiler.profile(
+        #     activities=[
+        #         torch.profiler.ProfilerActivity.CPU,
+        #         torch.profiler.ProfilerActivity.CUDA,
+        #     ],
+        #     record_shapes=True
+        # ) as prof:
+        x_cls = F.scaled_dot_product_attention(
+            q_cls, k, v,
+            attn_mask=attn_mask,
+            dropout_p=self.attn_drop.p if self.training else 0.0,
+            scale=self.scale
+        )
+
+        # # Isolate the SDPA dispatch calls in the profiler trace
+        # events = prof.key_averages()
+        # for event in events:
+        #     if "scaled_dot_product" in event.key:
+        #         print(f"Executed C++ Kernel: {event.key}")
+
+        
+        x_cls = x_cls.transpose(1, 2).reshape(B, 1, C)
         x_cls = self.proj(x_cls)
         x_cls = self.attn_drop(x_cls)
 
-        # Replace CLS token embedding
-        x = torch.cat([x_cls, x[:, 1:, :]], dim=1)
-        x = x + residual
+        # Strictly update ONLY the CLS token in the residual stream
+        new_cls = residual[:, 0:1, :] + x_cls
+        x = torch.cat([new_cls, residual[:, 1:, :]], dim=1)
 
         # --- 2. MLP ---
         residual = x
@@ -408,9 +443,9 @@ class ParticleTransformer(nn.Module):
         outputs = {}
         outputs["classification"] = self.head(cls_output)
         if self.pt_head is not None:
-            pt_output = self.pt_head(cls_output)
+            pt_output = self.pt_head(torch.mean(x, dim=1))  # Global average pooling for regression head
             outputs["pt"] = pt_output
         if self.quant_head is not None:
-            quant_output = self.quant_head(cls_output)
+            quant_output = self.quant_head(torch.mean(x, dim=1))  # Global average pooling for quantile regression head
             outputs["quantiles"] = quant_output
         return outputs
