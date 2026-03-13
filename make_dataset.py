@@ -24,9 +24,21 @@ ak.behavior.update(vector.backends.awkward.behavior)
 
 
 def compute_kinematic_weights(
-    pt, eta, y, n_bins_pt=100, n_bins_eta=50, max_pt=500, clip_max=50.0,
-    on_signal=True, sample_weights=None, flatten_both=False, iterative=False,
-    flatten_n_bins_pt=40, flatten_n_bins_eta=20, flatten_min_count=10, percentile=99.9
+    pt,
+    eta,
+    y,
+    n_bins_pt=100,
+    n_bins_eta=50,
+    max_pt=500,
+    clip_max=50.0,
+    on_signal=True,
+    sample_weights=None,
+    flatten_both=False,
+    iterative=False,
+    flatten_n_bins_pt=40,
+    flatten_n_bins_eta=20,
+    flatten_min_count=10,
+    percentile=99.9,
 ):
     """
     Calculates per-jet kinematic weights.
@@ -88,12 +100,12 @@ def compute_kinematic_weights(
         # more central) that break simple factorized approaches.
         #
         # If iterative, then
-            # Each iteration:
-            #   1. Compute 1D weighted pT histogram → correction = target / count
-            #   2. Multiply per-jet weight by pT correction
-            #   3. Compute 1D weighted eta histogram → correction = target / count
-            #   4. Multiply per-jet weight by eta correction
-            # Converges in ~5-10 iterations.  Bins below min_count get weight 0.
+        # Each iteration:
+        #   1. Compute 1D weighted pT histogram → correction = target / count
+        #   2. Multiply per-jet weight by pT correction
+        #   3. Compute 1D weighted eta histogram → correction = target / count
+        #   4. Multiply per-jet weight by eta correction
+        # Converges in ~5-10 iterations.  Bins below min_count get weight 0.
         # else:
         #  Single-pass 2D flattening → sparse bins get weight 0, outliers get last-bin weight.
         # pT range is capped at the 99th percentile to avoid sparse extreme
@@ -108,14 +120,22 @@ def compute_kinematic_weights(
         pt_lo = max(pt[pt > 0].min(), 1.0)
         pt_99 = np.percentile(pt, percentile)
         pt_hi = pt_99 * 1.01
-        flat_pt_bins = np.geomspace(pt[pt > 0].min(), np.percentile(pt, percentile) * 1.01, flatten_n_bins_pt + 1)
+        flat_pt_bins = np.geomspace(
+            pt[pt > 0].min(),
+            np.percentile(pt, percentile) * 1.01,
+            flatten_n_bins_pt + 1,
+        )
         flat_eta_bins = np.linspace(-2.5, 2.5, flatten_n_bins_eta + 1)
-        print(f"  pT bins:  {flatten_n_bins_pt} log-spaced [{pt_lo:.1f}, {pt_hi:.1f}] GeV  (99th pctl: {pt_99:.1f})")
+        print(
+            f"  pT bins:  {flatten_n_bins_pt} log-spaced [{pt_lo:.1f}, {pt_hi:.1f}] GeV  (99th pctl: {pt_99:.1f})"
+        )
         print(f"  eta bins: {flatten_n_bins_eta} linear [-2.5, 2.5]")
 
         def _bin_idx(vals, bins, n_bins):
             return np.clip(np.searchsorted(bins, vals) - 1, 0, n_bins - 1)
+
         if iterative:
+
             def _flatten_class(pt_cls, eta_cls, min_count):
                 """Iteratively flatten pT and eta for one class.
 
@@ -145,7 +165,7 @@ def compute_kinematic_weights(
                         corr_pt[ok_pt] = target_pt / H_pt[ok_pt]
                         corr_pt[~ok_pt] = 0.0
                         w *= corr_pt[pt_idx]
-                        alive &= (corr_pt[pt_idx] > 0)
+                        alive &= corr_pt[pt_idx] > 0
 
                     # --- eta correction ---
                     H_eta = np.zeros(flatten_n_bins_eta, dtype=np.float64)
@@ -157,7 +177,7 @@ def compute_kinematic_weights(
                         corr_eta[ok_eta] = target_eta / H_eta[ok_eta]
                         corr_eta[~ok_eta] = 0.0
                         w *= corr_eta[eta_idx]
-                        alive &= (corr_eta[eta_idx] > 0)
+                        alive &= corr_eta[eta_idx] > 0
 
                 # ---- Post-processing: interpolate sparse bins, fix outliers ----
                 # Build per-bin mean weight maps from converged alive jets.
@@ -192,9 +212,13 @@ def compute_kinematic_weights(
 
                 def _reconstruct(pt_w, eta_w):
                     """Reconstruct weight from 1D maps, scaled to alive level."""
-                    return (pt_w / max(pt_pop_mean, 1e-12)
-                            * eta_w / max(eta_pop_mean, 1e-12)
-                            * global_mean)
+                    return (
+                        pt_w
+                        / max(pt_pop_mean, 1e-12)
+                        * eta_w
+                        / max(eta_pop_mean, 1e-12)
+                        * global_mean
+                    )
 
                 # Sparse-bin jets: interpolated weight from neighbours
                 sparse = ~alive & ~outlier
@@ -207,29 +231,46 @@ def compute_kinematic_weights(
                 # Outlier jets: use last pT bin weight × their eta correction
                 if outlier.any():
                     w[outlier] = _reconstruct(
-                        pt_filled[-1],               # last (highest) pT bin
+                        pt_filled[-1],  # last (highest) pT bin
                         eta_filled[eta_idx[outlier]],
                     )
 
                 return w.astype(np.float32), int(sparse.sum()), int(outlier.sum())
-            
-            w_sig, n_sig_sparse, n_sig_outlier = _flatten_class(pt_sig, eta_sig, flatten_min_count)
-            w_bkg, n_bkg_sparse, n_bkg_outlier = _flatten_class(pt_bkg, eta_bkg, flatten_min_count)
-            
+
+            w_sig, n_sig_sparse, n_sig_outlier = _flatten_class(
+                pt_sig, eta_sig, flatten_min_count
+            )
+            w_bkg, n_bkg_sparse, n_bkg_outlier = _flatten_class(
+                pt_bkg, eta_bkg, flatten_min_count
+            )
+
             print(f"  min_count threshold: {flatten_min_count}")
-            print(f"  Sig — {n_sig_outlier} outliers (last-bin wt), "
-                f"{n_sig_sparse} sparse-bin jets (interpolated)")
-            print(f"  Bkg — {n_bkg_outlier} outliers (last-bin wt), "
-                f"{n_bkg_sparse} sparse-bin jets (interpolated)")
-        else: 
+            print(
+                f"  Sig — {n_sig_outlier} outliers (last-bin wt), "
+                f"{n_sig_sparse} sparse-bin jets (interpolated)"
+            )
+            print(
+                f"  Bkg — {n_bkg_outlier} outliers (last-bin wt), "
+                f"{n_bkg_sparse} sparse-bin jets (interpolated)"
+            )
+        else:
+
             def _flatten_class(pt, eta):
                 """Single-pass 2D flattening."""
                 # 2D histogram counts for this class
-                h_ij, _, _ = np.histogram2d(pt, eta, bins=[flat_pt_bins, flat_eta_bins], density=False)
-                h_ij = np.where(h_ij == 0, np.inf, h_ij)  # Avoid division by zero; these bins will get zero weight
+                h_ij, _, _ = np.histogram2d(
+                    pt, eta, bins=[flat_pt_bins, flat_eta_bins], density=False
+                )
+                h_ij = np.where(
+                    h_ij == 0, np.inf, h_ij
+                )  # Avoid division by zero; these bins will get zero weight
                 w_ij = np.where(h_ij > 0, 1.0 / h_ij, 0)
-                pt_idx = np.clip(np.digitize(pt, flat_pt_bins) - 1, 0, flatten_n_bins_pt - 2)
-                eta_idx = np.clip(np.digitize(eta, flat_eta_bins) - 1, 0, flatten_n_bins_eta - 2)
+                pt_idx = np.clip(
+                    np.digitize(pt, flat_pt_bins) - 1, 0, flatten_n_bins_pt - 2
+                )
+                eta_idx = np.clip(
+                    np.digitize(eta, flat_eta_bins) - 1, 0, flatten_n_bins_eta - 2
+                )
                 w = w_ij[pt_idx, eta_idx]
                 max_w = np.percentile(w[w > 0], percentile)
                 w = np.clip(w, 0, max_w)
@@ -249,10 +290,14 @@ def compute_kinematic_weights(
 
         # Diagnostics
         n_sig_total, n_bkg_total = len(pt_sig), len(pt_bkg)
-        print(f"  Signal  — mean: {final_weights[sig_mask].mean():.3f}, "
-              f"max: {final_weights[sig_mask].max():.3f}")
-        print(f"  Bkg     — mean: {final_weights[bkg_mask].mean():.3f}, "
-              f"max: {final_weights[bkg_mask].max():.3f}")
+        print(
+            f"  Signal  — mean: {final_weights[sig_mask].mean():.3f}, "
+            f"max: {final_weights[sig_mask].max():.3f}"
+        )
+        print(
+            f"  Bkg     — mean: {final_weights[bkg_mask].mean():.3f}, "
+            f"max: {final_weights[bkg_mask].max():.3f}"
+        )
         return final_weights
 
     # ----- Default mode: match one class to the other -----
@@ -613,9 +658,7 @@ def process_batch(
     # Compute gen pT per reco jet: for matched (signal) jets use the
     # matched gen b-quark pT; for unmatched (background) jets use 0.
     gen_pt_lookup = gen_b.pt[idx_closest_gen]
-    gen_pt_per_jet = ak.fill_none(
-        ak.where(is_pure_label, gen_pt_lookup, 0.0), 0.0
-    )
+    gen_pt_per_jet = ak.fill_none(ak.where(is_pure_label, gen_pt_lookup, 0.0), 0.0)
     gen_pt_flat = ak.to_numpy(ak.flatten(gen_pt_per_jet, axis=1))
     gen_pt_flat = gen_pt_flat[valid_jets]
 
@@ -715,10 +758,7 @@ def process_qcd_batch(
         if len(events) == 0:
             continue
 
-        print(
-            f"  QCD chunk events {start}-{stop}  "
-            f"({len(events)} events loaded)"
-        )
+        print(f"  QCD chunk events {start}-{stop}  " f"({len(events)} events loaded)")
 
         # --- Gen-level b-quarks via statusFlags for signal labelling ---
         gen_b_quarks = select_gen_b_quarks_by_status(events, config)
@@ -761,9 +801,7 @@ def process_qcd_batch(
         # Compute gen pT per reco jet (same logic as process_batch):
         # b-matched jets → gen b-quark pT, unmatched → 0
         gen_pt_lookup = gen_b_quarks.pt[idx_closest_gen]
-        gen_pt_per_jet = ak.fill_none(
-            ak.where(is_b_matched, gen_pt_lookup, 0.0), 0.0
-        )
+        gen_pt_per_jet = ak.fill_none(ak.where(is_b_matched, gen_pt_lookup, 0.0), 0.0)
         gen_pt_flat = ak.to_numpy(ak.flatten(gen_pt_per_jet, axis=1))
         gen_pt_flat = gen_pt_flat[valid_jets]
 
@@ -833,22 +871,26 @@ def process_batch_for_higgs(
         CONFIG=config,
     )
 
-    # --- Labels ---
-    gen_higgs = select_gen_higgs(events)
-    n_gen_higgs_before_cuts = ak.sum(ak.num(gen_higgs, axis=1))
-    gen_higgs = apply_custom_cuts(gen_higgs, config, "gen", kinematic_only=True)
-    n_gen_higgs_after_cuts = ak.sum(ak.num(gen_higgs, axis=1))
+    # --- Labels: b-quarks from Higgs decays ---
+    # We match AK8 jets to gen b-quarks whose parent is a Higgs (pdgId=25).
+    # A jet is labelled signal (y=1) if it cross-matches to at least one such
+    # b-quark within the cone. This is the physically correct definition:
+    # a Higgs-tagged AK8 jet should contain the b-jets from an H→bb decay.
+    gen_b = select_gen_b_quarks_from_higgs(events)
+    n_gen_b_before_cuts = ak.sum(ak.num(gen_b, axis=1))
+    gen_b = apply_custom_cuts(gen_b, config, "gen", kinematic_only=True)
+    n_gen_b_after_cuts = ak.sum(ak.num(gen_b, axis=1))
     print(
-        f"  Gen Higgs: {n_gen_higgs_before_cuts} -> {n_gen_higgs_after_cuts} after pT/eta cuts"
+        f"  Gen b-quarks (from Higgs): {n_gen_b_before_cuts} -> {n_gen_b_after_cuts} after pT/eta cuts"
     )
 
     if cluster_using_fastjet:
-        print(f"Clustering {collection_key}...")
+        print(f"Clustering {collection_key} with AK8 (R={cluster_dist_param})...")
         clustered_jets = cluster_candidates(
             events, config, collection_key, dist_param=cluster_dist_param
         )
         n_clustered_jets = ak.sum(ak.num(clustered_jets, axis=1))
-        print(f"  Clustered jets (pT > 25 GeV, |eta| < 2.4): {n_clustered_jets}")
+        print(f"  Clustered AK8 jets (pT > 25 GeV, |eta| < 2.4): {n_clustered_jets}")
 
         # Sort jets by pT (descending)
         sorted_indices = ak.argsort(clustered_jets.pt, axis=1, ascending=False)
@@ -861,42 +903,19 @@ def process_batch_for_higgs(
         const_pt_sort = ak.argsort(matched_cands.pt, axis=2, ascending=False)
         matched_cands = matched_cands[const_pt_sort]
     else:
-        l1_col = config["l1ng"]["collection_name"]
-        l1_puppi_col = "L1BarrelExtPuppi"
-
-        l1_jets = events[l1_col]
-        l1_jets = apply_custom_cuts(l1_jets, config, "l1ng", kinematic_only=True)
-        l1_jets = l1_jets[ak.argsort(l1_jets.pt, axis=1, ascending=False, stable=True)]
-        l1_puppi_cands = events[l1_puppi_col]
-        l1_puppi_cands = apply_custom_cuts(
-            l1_puppi_cands, config, "l1barrelextpuppi", kinematic_only=True
+        raise NotImplementedError(
+            "Non-fastjet clustering not implemented for higgs_mode (AK8)"
         )
-        l1_puppi_cands = l1_puppi_cands[
-            ak.argsort(l1_puppi_cands.pt, axis=1, ascending=False, stable=True)
-        ]
-
-        l1_jet_vecs = l1_jets.vector[:, :, None]
-        l1_cand_vec = l1_puppi_cands.vector[:, None, :]
-
-        dR_matrix_l1_puppi = l1_jet_vecs.deltaR(l1_cand_vec)
-        in_cone = dR_matrix_l1_puppi < 0.4
-
-        cands_broadcast, mask_broadcast = ak.broadcast_arrays(
-            l1_puppi_cands[:, None, :], in_cone
-        )
-        matched_cands = cands_broadcast[mask_broadcast]
-        matched_pt_sorted_idxs = ak.argsort(
-            matched_cands.pt, axis=2, ascending=False, stable=True
-        )
-        matched_cands = matched_cands[matched_pt_sorted_idxs]
 
     # --- Extract features ---
     X, particle_mask, valid_jets = extract_features(
         l1_jets, matched_cands, n_constituents, min_constituents
     )
 
+    # Cross-match AK8 jets to gen b-from-Higgs quarks
+    # y=1 if the jet cross-matches to a gen b-from-Higgs, y=0 otherwise
     is_pure_label, idx_closest_gen = get_purity_mask_cross_matched(
-        gen_higgs, l1_jets, return_gen_idx=True
+        gen_b, l1_jets, return_gen_idx=True
     )
     labels = ak.values_astype(is_pure_label, np.float32)
     Y = ak.to_numpy(ak.flatten(labels, axis=None))
@@ -906,15 +925,414 @@ def process_batch_for_higgs(
     particle_mask = particle_mask[valid_jets]
 
     # Compute gen pT per reco jet: matched (signal) jets get the
-    # matched gen Higgs pT; unmatched (background) jets get 0.
-    gen_pt_lookup = gen_higgs.pt[idx_closest_gen]
-    gen_pt_per_jet = ak.fill_none(
-        ak.where(is_pure_label, gen_pt_lookup, 0.0), 0.0
-    )
+    # matched gen b-quark pT; unmatched (background) jets get 0.
+    gen_pt_lookup = gen_b.pt[idx_closest_gen]
+    gen_pt_per_jet = ak.fill_none(ak.where(is_pure_label, gen_pt_lookup, 0.0), 0.0)
     gen_pt_flat = ak.to_numpy(ak.flatten(gen_pt_per_jet, axis=1))
     gen_pt_flat = gen_pt_flat[valid_jets]
 
+    n_sig = int((Y == 1).sum())
+    n_bkg = int((Y == 0).sum())
+    print(f"  Signal jets (b-from-Higgs matched): {n_sig}")
+    print(f"  Background jets (unmatched): {n_bkg}")
+
     return X, Y, particle_mask, gen_pt_flat
+
+
+def process_qcd_batch_for_higgs(
+    config,
+    qcd_weight,
+    collections_to_load=None,
+    n_constituents=128,
+    min_constituents=1,
+    collection_key="l1barrelextpuppi",
+    cluster_dist_param=0.8,
+    chunk_size=50_000,
+):
+    """
+    Process a single QCD ROOT file with AK8 clustering for Higgs-mode training.
+
+    Since QCD events contain no Higgs bosons, **all** clustered AK8 jets are
+    labelled y=0 (background).  The function mirrors process_qcd_batch() but
+    skips gen-level matching entirely and always assigns label=0.
+
+    Parameters
+    ----------
+    config : dict
+        Config dict with file_pattern, tree_name, max_events already set for this file.
+    qcd_weight : float
+        Cross-section weight for this QCD pT bin.
+    collection_key : str
+        Key for the L1 candidate collection (e.g. 'l1barrelextpuppi').
+    cluster_dist_param : float
+        Anti-kT distance parameter (default 0.8 for AK8).
+    chunk_size : int
+        Maximum number of events to process at once.
+
+    Returns
+    -------
+    X : np.ndarray, shape (n_jets, n_constituents, n_features)
+    Y : np.ndarray, shape (n_jets,)  — all zeros (background)
+    particle_mask : np.ndarray, shape (n_jets, n_constituents)
+    qcd_weights_per_jet : np.ndarray, shape (n_jets,)
+    """
+    import uproot
+
+    file_pattern = config["file_pattern"]
+    tree_name = config["tree_name"]
+    max_events = config["max_events"]
+
+    if collections_to_load is None:
+        collections_to_load = [
+            config[collection_key]["collection_name"],
+        ]
+
+    # Determine total number of events in the file
+    try:
+        with uproot.open(f"{file_pattern}:{tree_name}") as tree:
+            total_events = tree.num_entries
+    except Exception:
+        total_events = None
+
+    if max_events is not None and total_events is not None:
+        total_events = min(int(max_events), total_events)
+    elif max_events is not None:
+        total_events = int(max_events)
+
+    if total_events is None:
+        chunk_boundaries = [(None, None)]
+    else:
+        chunk_boundaries = [
+            (start, min(start + chunk_size, total_events))
+            for start in range(0, total_events, chunk_size)
+        ]
+
+    chunk_X, chunk_Y, chunk_mask, chunk_w = [], [], [], []
+
+    for start, stop in chunk_boundaries:
+        chunk_cfg = dict(config)
+        chunk_cfg["max_events"] = stop
+
+        events = load_and_prepare_data(
+            file_pattern,
+            tree_name,
+            collections_to_load,
+            max_events=stop,
+            correct_pt=False,
+            CONFIG=chunk_cfg,
+        )
+        if start is not None and start > 0:
+            events = events[start:]
+
+        if len(events) == 0:
+            continue
+
+        print(
+            f"  QCD (higgs) chunk events {start}-{stop}  "
+            f"({len(events)} events loaded)"
+        )
+
+        # --- Cluster AK8 jets ---
+        clustered_jets = cluster_candidates(
+            events, config, collection_key, dist_param=cluster_dist_param
+        )
+        sorted_indices = ak.argsort(clustered_jets.pt, axis=1, ascending=False)
+        l1_jets = clustered_jets[sorted_indices]
+
+        matched_cands = l1_jets.constituents
+        const_pt_sort = ak.argsort(matched_cands.pt, axis=2, ascending=False)
+        matched_cands = matched_cands[const_pt_sort]
+
+        # --- Extract features ---
+        X, particle_mask, valid_jets = extract_features(
+            l1_jets, matched_cands, n_constituents, min_constituents
+        )
+
+        # All QCD jets are background (y=0): no Higgs present in QCD ntuples
+        n_jets = int(valid_jets.sum())
+        labels_flat = np.zeros(n_jets, dtype=np.float32)
+
+        X = X[valid_jets]
+        particle_mask = particle_mask[valid_jets]
+
+        print(f"    {n_jets} valid AK8 jets — all labelled background (y=0)")
+
+        if n_jets > 0:
+            chunk_X.append(X)
+            chunk_Y.append(labels_flat)
+            chunk_mask.append(particle_mask)
+            chunk_w.append(np.full(n_jets, qcd_weight, dtype=np.float32))
+
+        del events, l1_jets, matched_cands
+
+    if len(chunk_X) == 0:
+        empty_X = np.empty((0, n_constituents, 0), dtype=np.float32)
+        return (
+            empty_X,
+            np.empty(0, dtype=np.float32),
+            np.empty((0, n_constituents), dtype=bool),
+            np.empty(0, dtype=np.float32),
+        )
+
+    return (
+        np.concatenate(chunk_X, axis=0),
+        np.concatenate(chunk_Y, axis=0),
+        np.concatenate(chunk_mask, axis=0),
+        np.concatenate(chunk_w, axis=0),
+    )
+
+
+def generate_dataset_higgs_with_qcd_background(
+    config_path,
+    output_file="l1_higgs_qcd_bkg_training_data.npz",
+    signal_data_dir="data/hh4b_puppi_pf/hh4b",
+    collections_to_load=None,
+    num_constituents=128,
+    collection_key="l1barrelextpuppi",
+    min_constituents=1,
+    on_signal=True,
+    cluster_dist_param=0.8,
+    flatten_spectrum=False,
+):
+    """
+    Build an AK8 Higgs-tagging training dataset:
+
+      - Signal   = AK8 jets from HH→4b matched to gen b-quarks from Higgs (y=1)
+      - Background = AK8 jets from QCD pT-binned samples (y=0, all jets)
+
+    Each QCD pT-bin carries a cross-section weight.  Kinematic reweighting is
+    applied to make the signal pT-eta distribution match the weighted background.
+
+    Parameters
+    ----------
+    config_path : str
+        Path to the JSON config (must have a 'QCD_background' section).
+    output_file : str
+        Output NPZ file.
+    signal_data_dir : str
+        Directory with HH→4b ROOT files.
+    num_constituents : int
+        Constituents per jet (recommend 128 for AK8).
+    collection_key : str
+        Config key for the L1 candidate collection (e.g. 'l1barrelextpuppi').
+    cluster_dist_param : float
+        Anti-kT distance parameter (default 0.8 for AK8).
+    on_signal : bool
+        If True, reweight signal to match background kinematics.
+    flatten_spectrum : bool
+        If True, reweight both classes to flat pT-eta distributions.
+    """
+    with open(config_path, "r") as f:
+        config = json.load(f)
+
+    coll_list = collections_to_load or [
+        config[collection_key]["collection_name"],
+        "GenPart",
+    ]
+
+    # ================================================================
+    # SIGNAL  –  HH→4b, AK8 jets matched to gen b-from-Higgs
+    # ================================================================
+    print("=" * 60)
+    print("Processing SIGNAL from HH→4b (higgs_mode, AK8)...")
+    print("=" * 60)
+
+    signal_root_files = sorted(
+        [
+            os.path.join(signal_data_dir, f)
+            for f in os.listdir(signal_data_dir)
+            if f.endswith(".root")
+        ]
+    )
+
+    all_X_sig, all_y_sig, all_masks_sig, all_gen_pt_sig = [], [], [], []
+
+    for root_file in tqdm(signal_root_files, desc="Signal files (AK8)"):
+        config["file_pattern"] = root_file
+        X_chunk, y_chunk, mask_chunk, gen_pt_chunk = process_batch_for_higgs(
+            config=config,
+            collections_to_load=coll_list,
+            n_constituents=num_constituents,
+            min_constituents=min_constituents,
+            collection_key=collection_key,
+            cluster_dist_param=cluster_dist_param,
+        )
+        # Keep only jets matched to a gen b-from-Higgs (y=1)
+        sig_sel = y_chunk == 1
+        all_X_sig.append(X_chunk[sig_sel])
+        all_y_sig.append(y_chunk[sig_sel])
+        all_masks_sig.append(mask_chunk[sig_sel])
+        all_gen_pt_sig.append(gen_pt_chunk[sig_sel])
+        print(f"  Signal AK8 jets in batch: {int(sig_sel.sum())}")
+
+    X_sig = np.concatenate(all_X_sig, axis=0)
+    Y_sig = np.concatenate(all_y_sig, axis=0)
+    mask_sig = np.concatenate(all_masks_sig, axis=0)
+    gen_pt_sig = np.concatenate(all_gen_pt_sig, axis=0)
+    print(f"\nTotal signal AK8 jets: {len(Y_sig)}")
+    del all_X_sig, all_y_sig, all_masks_sig, all_gen_pt_sig
+
+    # ================================================================
+    # BACKGROUND  –  QCD pT-binned, AK8, all y=0
+    # ================================================================
+    print("\n" + "=" * 60)
+    print("Processing BACKGROUND from QCD (higgs_mode, AK8)...")
+    print("=" * 60)
+
+    qcd_config = config["QCD_background"]
+    all_X_qcd, all_y_qcd, all_masks_qcd, all_qcd_weights = [], [], [], []
+
+    # QCD processing does NOT need GenPart (no Higgs matching)
+    qcd_coll_list = [config[collection_key]["collection_name"]]
+
+    for bin_name, bin_cfg in qcd_config.items():
+        print(f"\n--- QCD bin: {bin_name}  (weight={bin_cfg['weight']}) ---")
+
+        qcd_files = sorted(glob_module.glob(bin_cfg["file_pattern"]))
+        if not qcd_files:
+            print(f"  Warning: No files found for {bin_name}, skipping.")
+            continue
+
+        for qcd_file in tqdm(qcd_files, desc=f"QCD {bin_name}"):
+            qcd_cfg = dict(config)
+            qcd_cfg["file_pattern"] = qcd_file
+            qcd_cfg["tree_name"] = bin_cfg["tree_name"]
+            qcd_cfg["max_events"] = bin_cfg["max_events"]
+
+            X_chunk, y_chunk, mask_chunk, w_chunk = process_qcd_batch_for_higgs(
+                config=qcd_cfg,
+                qcd_weight=bin_cfg["weight"],
+                collections_to_load=qcd_coll_list,
+                n_constituents=num_constituents,
+                min_constituents=min_constituents,
+                collection_key=collection_key,
+                cluster_dist_param=cluster_dist_param,
+            )
+
+            if len(X_chunk) > 0:
+                all_X_qcd.append(X_chunk)
+                all_y_qcd.append(y_chunk)
+                all_masks_qcd.append(mask_chunk)
+                all_qcd_weights.append(w_chunk)
+                print(f"  QCD AK8 jets in batch: {len(X_chunk)} (all background)")
+            del X_chunk, y_chunk, mask_chunk, w_chunk
+
+    print(f"\nFinished processing QCD bins. Combining data...")
+    X_qcd = np.concatenate(all_X_qcd, axis=0)
+    del all_X_qcd
+    Y_qcd = np.concatenate(all_y_qcd, axis=0)
+    del all_y_qcd
+    mask_qcd = np.concatenate(all_masks_qcd, axis=0)
+    del all_masks_qcd
+    qcd_weights = np.concatenate(all_qcd_weights, axis=0)
+    del all_qcd_weights
+
+    # Sanity check: QCD must be all background
+    assert (Y_qcd == 0).all(), "BUG: found non-zero labels in QCD batch!"
+    print(f"\nTotal QCD AK8 jets (all background): {len(Y_qcd)}")
+
+    # ================================================================
+    # COMBINE
+    # ================================================================
+    print("\n" + "=" * 60)
+    print("Combining signal and QCD background (AK8)...")
+    print("=" * 60)
+
+    final_X = np.concatenate([X_sig, X_qcd], axis=0)
+    final_y = np.concatenate([Y_sig, Y_qcd], axis=0)
+    final_mask = np.concatenate([mask_sig, mask_qcd], axis=0)
+    # gen_pt: signal jets have matched b-quark pT, background jets have 0
+    gen_pt_qcd_zeros = np.zeros(len(Y_qcd), dtype=np.float32)
+    final_gen_pt = np.concatenate([gen_pt_sig, gen_pt_qcd_zeros], axis=0)
+
+    # Sample weights: HH signal → 1.0, QCD → cross-section weight
+    sample_weights = np.concatenate(
+        [np.ones(len(Y_sig), dtype=np.float32), qcd_weights], axis=0
+    )
+
+    print(f"\nCombined dataset:")
+    print(f"  Signal AK8 jets (b-from-Higgs): {len(Y_sig)}")
+    print(f"  QCD background AK8 jets:        {len(Y_qcd)}")
+    print(f"  Total signal (y=1):             {int((final_y == 1).sum())}")
+    print(f"  Total background (y=0):         {int((final_y == 0).sum())}")
+
+    # Jet kinematics from constituent 4-vectors (for kinematic reweighting)
+    final_4_vecs = vector.array(
+        {
+            "mass": final_X[:, :, 0],
+            "pt": final_X[:, :, 1],
+            "eta": final_X[:, :, 2],
+            "phi": final_X[:, :, 3],
+        }
+    )
+    final_jet_4_vecs = final_4_vecs.sum(axis=1)
+    final_pt = final_jet_4_vecs.pt
+    final_eta = final_jet_4_vecs.eta
+
+    # ================================================================
+    # KINEMATIC WEIGHTS
+    # ================================================================
+    print("Computing kinematic weights...")
+
+    if flatten_spectrum:
+        print("  Mode: flatten_spectrum (ignoring QCD xsec weights)")
+        kinematic_weights = compute_kinematic_weights(
+            final_pt,
+            final_eta,
+            final_y,
+            flatten_both=True,
+        )
+        raw_weights = kinematic_weights.copy()
+    else:
+        print("  Mode: match signal to background (using QCD xsec weights)")
+        kinematic_weights = compute_kinematic_weights(
+            final_pt,
+            final_eta,
+            final_y,
+            on_signal=on_signal,
+            sample_weights=sample_weights,
+        )
+        raw_weights = (kinematic_weights * sample_weights).astype(np.float32)
+
+    # Normalize per-class so each class has mean weight ≈ 1
+    sig_mask_final = final_y == 1
+    bkg_mask_final = final_y == 0
+
+    sig_mean = raw_weights[sig_mask_final].mean()
+    bkg_mean = raw_weights[bkg_mask_final].mean()
+
+    final_weights = raw_weights.copy()
+    final_weights[sig_mask_final] /= sig_mean
+    final_weights[bkg_mask_final] /= bkg_mean
+
+    print(f"\nWeight normalization:")
+    print(
+        f"  Signal  — raw mean: {sig_mean:.4g}, normalized mean: {final_weights[sig_mask_final].mean():.4f}"
+    )
+    print(
+        f"  Bkg     — raw mean: {bkg_mean:.4g}, normalized mean: {final_weights[bkg_mask_final].mean():.4f}"
+    )
+
+    print(f"\nSaving {final_X.shape} dataset to {output_file}...")
+    print(f"  - Features shape:       {final_X.shape}")
+    print(f"  - Labels shape:         {final_y.shape}")
+    print(f"  - Particle mask shape:  {final_mask.shape}")
+    print(f"  - Sample weights shape: {final_weights.shape}")
+    print(f"  - Signal jets:          {int((final_y == 1).sum())}")
+    print(f"  - Background jets:      {int((final_y == 0).sum())}")
+    np.savez_compressed(
+        output_file,
+        x=final_X,
+        y=final_y,
+        mask=final_mask,
+        jet_pt=final_pt,
+        jet_eta=final_eta,
+        weights=final_weights,
+        weights_raw=raw_weights,
+        gen_pt=final_gen_pt,
+        qcd_weights=sample_weights,
+    )
+    print("Done.")
 
 
 def generate_dataset_with_qcd_background(
@@ -1024,7 +1442,13 @@ def generate_dataset_with_qcd_background(
     print("=" * 60)
 
     qcd_config = config["QCD_background"]
-    all_X_qcd, all_y_qcd, all_masks_qcd, all_qcd_weights, all_gen_pt_qcd = [], [], [], [], []
+    all_X_qcd, all_y_qcd, all_masks_qcd, all_qcd_weights, all_gen_pt_qcd = (
+        [],
+        [],
+        [],
+        [],
+        [],
+    )
 
     for bin_name, bin_cfg in qcd_config.items():
         print(f"\n--- QCD bin: {bin_name}  (weight={bin_cfg['weight']}) ---")
@@ -1058,10 +1482,18 @@ def generate_dataset_with_qcd_background(
                 all_gen_pt_qcd.append(gen_pt_chunk)
                 n_sig_chunk = int((y_chunk == 1).sum())
                 n_bkg_chunk = int((y_chunk == 0).sum())
-                print(f"  QCD jets in batch: {len(X_chunk)} "
-                      f"({n_sig_chunk} b-signal, {n_bkg_chunk} background)")
-            del X_chunk, y_chunk, mask_chunk, w_chunk, gen_pt_chunk  # free memory before next file
-    
+                print(
+                    f"  QCD jets in batch: {len(X_chunk)} "
+                    f"({n_sig_chunk} b-signal, {n_bkg_chunk} background)"
+                )
+            del (
+                X_chunk,
+                y_chunk,
+                mask_chunk,
+                w_chunk,
+                gen_pt_chunk,
+            )  # free memory before next file
+
     print(f"\nFinished processing QCD bins. Combining data...")
     X_qcd = np.concatenate(all_X_qcd, axis=0)
     del all_X_qcd  # free memory
@@ -1096,9 +1528,7 @@ def generate_dataset_with_qcd_background(
     final_X = np.concatenate([X_sig, X_qcd], axis=0)
     final_y = np.concatenate([Y_sig, Y_qcd], axis=0)
     final_mask = np.concatenate([mask_sig, mask_qcd], axis=0)
-    final_gen_pt = np.concatenate(
-        [gen_pt_sig, gen_pt_qcd], axis=0
-    )
+    final_gen_pt = np.concatenate([gen_pt_sig, gen_pt_qcd], axis=0)
 
     # Per-jet sample weights:
     #   HH signal jets  → 1.0  (no cross-section reweighting needed)
@@ -1175,9 +1605,15 @@ def generate_dataset_with_qcd_background(
     final_weights[bkg_mask_final] /= bkg_mean
 
     print(f"\nWeight normalization:")
-    print(f"  Signal  — raw mean: {sig_mean:.4g}, normalized mean: {final_weights[sig_mask_final].mean():.4f}")
-    print(f"  Bkg     — raw mean: {bkg_mean:.4g}, normalized mean: {final_weights[bkg_mask_final].mean():.4f}")
-    print(f"  Bkg     — normalized min: {final_weights[bkg_mask_final].min():.4g}, max: {final_weights[bkg_mask_final].max():.4g}")
+    print(
+        f"  Signal  — raw mean: {sig_mean:.4g}, normalized mean: {final_weights[sig_mask_final].mean():.4f}"
+    )
+    print(
+        f"  Bkg     — raw mean: {bkg_mean:.4g}, normalized mean: {final_weights[bkg_mask_final].mean():.4f}"
+    )
+    print(
+        f"  Bkg     — normalized min: {final_weights[bkg_mask_final].min():.4g}, max: {final_weights[bkg_mask_final].max():.4g}"
+    )
 
     print(f"\nSaving {final_X.shape} dataset to {output_file}...")
     print(f"  - Features shape:       {final_X.shape}")
@@ -1380,9 +1816,9 @@ if __name__ == "__main__":
     argparse.add_argument(
         "--flatten_spectrum",
         type=bool,
-        default=False,
+        default=True,
         help="Reweight both signal and background to flat pT-eta distributions. "
-             "QCD cross-section weights are ignored; final weights are purely kinematic.",
+        "QCD cross-section weights are ignored; final weights are purely kinematic.",
     )
     args = argparse.parse_args()
 
@@ -1390,7 +1826,20 @@ if __name__ == "__main__":
     for arg, value in vars(args).items():
         print(f"  {arg}: {value}")
 
-    if args.use_qcd_background:
+    if args.higgs_mode and args.use_qcd_background:
+        # AK8 Higgs-tagger dataset: signal = b-from-Higgs, background = QCD (all y=0)
+        generate_dataset_higgs_with_qcd_background(
+            config_path=args.config,
+            output_file=args.output,
+            signal_data_dir=args.data_dir,
+            num_constituents=args.num_constituents,
+            collection_key=args.collection_key,
+            min_constituents=1,
+            on_signal=args.on_signal,
+            flatten_spectrum=args.flatten_spectrum,
+        )
+    elif args.use_qcd_background:
+        # AK4 b-tagger dataset with QCD background
         generate_dataset_with_qcd_background(
             config_path=args.config,
             output_file=args.output,
@@ -1402,6 +1851,7 @@ if __name__ == "__main__":
             flatten_spectrum=args.flatten_spectrum,
         )
     else:
+        # Signal-only or higgs_mode without QCD background
         generate_dataset(
             config_path=args.config,
             output_file=args.output,
