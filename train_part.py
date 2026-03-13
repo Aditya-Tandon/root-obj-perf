@@ -218,7 +218,9 @@ def run_training(config_path):
                 outputs["classification"] if isinstance(outputs, dict) else outputs
             )
             pt_output = outputs.get("pt", None) if isinstance(outputs, dict) else None
-            quant_output = outputs["quantiles"] if isinstance(outputs, dict) else None
+            quant_output = (
+                outputs.get("quantiles", None) if isinstance(outputs, dict) else None
+            )
 
             # Classification loss (weighted)
             per_sample_loss = criterion(cls_output, y_batch)
@@ -310,7 +312,7 @@ def run_training(config_path):
                     outputs.get("pt", None) if isinstance(outputs, dict) else None
                 )
                 quant_output = (
-                    outputs["quantiles"] if isinstance(outputs, dict) else None
+                    outputs.get("quantiles", None) if isinstance(outputs, dict) else None
                 )
                 val_cls_loss_sum += criterion(cls_output, y_batch).mean().item()
 
