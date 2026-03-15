@@ -14,19 +14,46 @@ def load_and_prepare_data(
     max_events,
     correct_pt=True,
     CONFIG=None,
+    filter_branches=True,
+    entry_start=None,
 ):
     """
     Loads the ROOT file, restructures the flat branches into objects,
     and creates 4-vector representations.
+
+    Parameters
+    ----------
+    filter_branches : bool
+        If True (default), only load branches matching the requested
+        collections, significantly reducing memory usage. Set to False
+        to load all branches (legacy behaviour).
     """
     print(f"Loading data from {file_pattern}...")
     if CONFIG is None:
         with open("hh-bbbb-obj-config.json", "r") as config_file:
             CONFIG = json.load(config_file)
 
+    # Build branch filter: only read branches belonging to requested collections
+    branch_filter = None
+    if filter_branches:
+        prefixes = [f"{c}_" for c in collections_to_load]
+        count_names = [f"n{c}" for c in collections_to_load]
+
+        def branch_filter(name):
+            for p in prefixes:
+                if name.startswith(p):
+                    return True
+            if name in count_names:
+                return True
+            return False
+
     try:
         events = uproot.concatenate(
-            f"{file_pattern}:{tree_name}", library="ak", entry_stop=max_events
+            f"{file_pattern}:{tree_name}",
+            library="ak",
+            entry_start=entry_start,
+            entry_stop=max_events if entry_start is None else entry_start + max_events,
+            filter_name=branch_filter,
         )
     except FileNotFoundError:
         print(
@@ -228,7 +255,7 @@ def select_gen_b_quarks_by_status(events, config=None):
     Requires:
       - isLastCopy       (bit 13)  — final copy in the parton shower
       - fromHardProcess  (bit  8)  — from the hard scattering process
-        Commented out right now 
+        Commented out right now
 
     This is appropriate for QCD samples where b-quarks do not come from Higgs
     but we still want to identify "real" gen b-quark jets for labelling.
@@ -249,7 +276,7 @@ def select_gen_b_quarks_by_status(events, config=None):
     abs_pdg = abs(gen.pdgId)
 
     is_b = abs_pdg == 5
-    is_last_copy = (gen.statusFlags & (1 << 13)) > 0       # bit 13
+    is_last_copy = (gen.statusFlags & (1 << 13)) > 0  # bit 13
     # from_hard_process = (gen.statusFlags & (1 << 8)) > 0    # bit 8
 
     gen_b_quarks = gen[is_b & is_last_copy]
@@ -262,7 +289,9 @@ def select_gen_b_quarks_by_status(events, config=None):
         ]
 
     n_total = ak.sum(ak.num(gen_b_quarks))
-    print(f"  Selected {n_total} gen b-quarks (isLastCopy & fromHardProcess) after cuts")
+    print(
+        f"  Selected {n_total} gen b-quarks (isLastCopy & fromHardProcess) after cuts"
+    )
     return gen_b_quarks
 
 
@@ -298,9 +327,9 @@ def apply_custom_cuts(reco_jets, config, key, kinematic_only=False, return_jets=
     if kinematic_only:
         pass
     else:
-        print(f"Applying custom cuts for {tagger_name} ({key})...")
         b_tag_cut = subcfg["b_tag_cut"]
         tagger_name = subcfg["tagger_name"]
+        print(f"Applying custom cuts for {tagger_name} ({key})...")
 
         if key == "offline":
             charm_veto_cut = subcfg["charm_veto_cut"]
@@ -362,3 +391,73 @@ def one_hot_encode_l1_puppi(flat_ids, n_classes=5):
 
 def one_hot_decode(one_hot_ids):
     return np.argmax(one_hot_ids, axis=-1)
+
+
+def load_event_level_data(
+    file_pattern,
+    tree_name="Events",
+    puppi_collection="L1ExtPuppi",
+    jet_collection="Jet",
+    max_events=None,
+):
+    """
+    Loads all L1ExtPuppi particle candidates and offline Jet collection
+    from ROOT files for event-level classification.
+
+    Returns (puppi_events, jet_events) as awkward arrays.
+    Does NOT apply cuts or trigger emulation.
+
+    Parameters
+    ----------
+    file_pattern : str
+        Glob pattern for ROOT files (e.g. "data/hh4b/data_*.root").
+    tree_name : str
+        TTree name inside the ROOT files.
+    puppi_collection : str
+        Name of the PUPPI particle collection (default: "L1ExtPuppi").
+    jet_collection : str
+        Name of the offline jet collection (default: "Jet").
+    max_events : int or None
+        Maximum number of events to load.
+
+    Returns
+    -------
+    puppi_events : ak.Array
+        Per-event ragged arrays with fields: pt, eta, phi, charge, dxy, z0,
+        id, puppiWeight.
+    jet_events : ak.Array
+        Per-event ragged arrays with fields: pt, eta, phi, btagPNetB.
+    n_events : int
+        Number of events loaded.
+    """
+    print(f"Loading event-level data from {file_pattern}...")
+
+    puppi_branches = [
+        f"{puppi_collection}_{f}"
+        for f in ["pt", "eta", "phi", "charge", "dxy", "z0", "id", "puppiWeight"]
+    ]
+    jet_branches = [f"{jet_collection}_{f}" for f in ["pt", "eta", "phi", "btagPNetB"]]
+
+    try:
+        events = uproot.concatenate(
+            f"{file_pattern}:{tree_name}",
+            expressions=puppi_branches + jet_branches,
+            library="ak",
+            entry_stop=max_events,
+        )
+    except FileNotFoundError:
+        print(f"Error: No files found matching '{file_pattern}'.")
+        raise
+
+    # Reshape flat branches into nested objects
+    puppi_fields = {
+        f.replace(f"{puppi_collection}_", ""): events[f] for f in puppi_branches
+    }
+    puppi_events = ak.zip(puppi_fields)
+
+    jet_fields = {f.replace(f"{jet_collection}_", ""): events[f] for f in jet_branches}
+    jet_events = ak.zip(jet_fields)
+
+    n_events = len(events)
+    print(f"Loaded {n_events} events with L1ExtPuppi particles and offline jets.")
+    return puppi_events, jet_events, n_events
