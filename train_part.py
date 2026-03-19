@@ -8,11 +8,11 @@ from torch.utils.data import Dataset, DataLoader, Subset
 from sklearn.metrics import roc_auc_score
 import wandb
 import argparse
-from parT import ParticleTransformer  # Import the new model
-from parT_helpers import extract_wandb_run_id, get_model_ckpt
+from model.parT import ParticleTransformer
+from wandb_utils import extract_wandb_run_id, get_model_ckpt
 
-from train_part_data import CombinedJetDataLoader
-from warmup_cosine_lr import WarmupCosineSchedulerWithRestarts
+from data_pipeline.combined_loader import CombinedJetDataLoader
+from model.warmup_cosine_lr import WarmupCosineSchedulerWithRestarts
 
 torch.manual_seed(42)
 np.random.seed(42)
@@ -43,10 +43,14 @@ class QuantileLoss(nn.Module):
         return loss
 
 # --- Training Helper ---
-def run_training(config_path):
-    # 1. Load Configuration
-    with open(config_path, "r") as f:
-        cfg = json.load(f)
+def run_training(cfg):
+    """Run the full training loop.
+
+    Parameters
+    ----------
+    cfg : dict
+        Configuration dictionary (already loaded and overridden).
+    """
 
     restart = cfg["training"]["restart"]
     # 2. Initialize WandB
@@ -446,7 +450,36 @@ def run_training(config_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config_part.json")
+    parser.add_argument(
+        "--set", action="append", default=[],
+        help="Override config values: --set training.lr=1e-4",
+    )
+    parser.add_argument("--exp-name", type=str, default=None, help="Override experiment name")
     args = parser.parse_args()
-    run_training(args.config)
 
+    # Read config eagerly — file can be edited immediately after this line
+    with open(args.config) as f:
+        cfg = json.load(f)
 
+    # Apply CLI overrides
+    if args.exp_name:
+        cfg["exp_name"] = args.exp_name
+    for override in args.set:
+        key, value = override.split("=", 1)
+        keys = key.split(".")
+        d = cfg
+        for k in keys[:-1]:
+            d = d[k]
+        # Auto-cast: try int, then float, then bool, else string
+        for cast in (int, float):
+            try:
+                value = cast(value)
+                break
+            except ValueError:
+                continue
+        else:
+            if value.lower() in ("true", "false"):
+                value = value.lower() == "true"
+        d[keys[-1]] = value
+
+    run_training(cfg)
