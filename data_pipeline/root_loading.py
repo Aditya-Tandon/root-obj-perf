@@ -1,0 +1,463 @@
+import json
+import numpy as np
+import awkward as ak
+import uproot
+import vector
+
+ak.behavior.update(vector.backends.awkward.behavior)
+
+
+def load_and_prepare_data(
+    file_pattern,
+    tree_name,
+    collections_to_load,
+    max_events,
+    correct_pt=True,
+    CONFIG=None,
+    filter_branches=True,
+    entry_start=None,
+):
+    """
+    Loads the ROOT file, restructures the flat branches into objects,
+    and creates 4-vector representations.
+
+    Parameters
+    ----------
+    filter_branches : bool
+        If True (default), only load branches matching the requested
+        collections, significantly reducing memory usage. Set to False
+        to load all branches (legacy behaviour).
+    """
+    print(f"Loading data from {file_pattern}...")
+    if CONFIG is None:
+        with open("hh-bbbb-obj-config.json", "r") as config_file:
+            CONFIG = json.load(config_file)
+
+    # Build branch filter: only read branches belonging to requested collections
+    branch_filter = None
+    if filter_branches:
+        prefixes = [f"{c}_" for c in collections_to_load]
+        count_names = [f"n{c}" for c in collections_to_load]
+
+        def branch_filter(name):
+            for p in prefixes:
+                if name.startswith(p):
+                    return True
+            if name in count_names:
+                return True
+            return False
+
+    try:
+        events = uproot.concatenate(
+            f"{file_pattern}:{tree_name}",
+            library="ak",
+            entry_start=entry_start,
+            entry_stop=max_events if entry_start is None else entry_start + max_events,
+            filter_name=branch_filter,
+        )
+    except FileNotFoundError:
+        print(
+            f"Error: No files found matching '{file_pattern}'. Please update the path."
+        )
+        exit()
+
+    print("Reshaping data into nested objects...")
+    for prefix in collections_to_load:
+        prefixed_fields = [
+            field for field in events.fields if field.startswith(prefix + "_")
+        ]
+        if not prefixed_fields:
+            print(f"Warning: No fields found with prefix '{prefix}_'. Skipping.")
+            continue
+        field_map = {
+            field.replace(prefix + "_", ""): events[field] for field in prefixed_fields
+        }
+        events[prefix] = ak.zip(field_map)
+
+    events = events[collections_to_load]
+
+    print("Creating 4-vector objects...")
+    for prefix in collections_to_load:
+        if prefix in events.fields and "pt" in events[prefix].fields:
+
+            # Default to using the raw pt
+            pt_field = events[prefix].pt
+
+            # Handle mass:
+            if "mass" in events[prefix].fields:
+                mass_field = events[prefix].mass
+            elif "et" in events[prefix].fields:
+                # Calculate L1 mass from et, pt, and eta
+                m2 = (events[prefix].et ** 2 - events[prefix].pt ** 2) * (
+                    np.cosh(events[prefix].eta) ** 2
+                )
+                m2_positive = ak.where(m2 < 0, 0, m2)
+                mass_field = np.sqrt(m2_positive)
+            else:
+                mass_field = ak.zeros_like(pt_field)
+
+            # Apply pT Corrections if this is the offline jet
+            if correct_pt:
+                if prefix == CONFIG["offline"]["collection_name"]:
+                    tagger_name = CONFIG["offline"]["tagger_name"]
+                    print(
+                        f"Applying pT regression corrections to {prefix} {tagger_name}..."
+                    )
+                    if tagger_name.startswith("btagPNet"):
+                        pt_corrected = (
+                            events[prefix].pt
+                            * events[prefix].PNetRegPtRawCorr
+                            * events[prefix].PNetRegPtRawCorrNeutrino
+                        )
+                    elif tagger_name.startswith("btagUParTAK4"):
+                        pt_corrected = (
+                            events[prefix].pt
+                            * events[prefix].UParTAK4RegPtRawCorr
+                            * events[prefix].UParTAK4RegPtRawCorrNeutrino
+                        )
+                    else:
+                        pt_corrected = events[
+                            prefix
+                        ].pt  # No correction if unknown tagger
+
+                    pt_corrected = (
+                        events[prefix].pt
+                        * events[prefix].PNetRegPtRawCorr
+                        * events[prefix].PNetRegPtRawCorrNeutrino
+                    )
+                    # Scale mass by the same correction factor
+                    correction_factor = ak.where(
+                        events[prefix].pt > 0, pt_corrected / events[prefix].pt, 1.0
+                    )
+                    mass_field = mass_field * correction_factor
+                    pt_field = pt_corrected
+
+                elif (
+                    prefix == CONFIG["l1ng"]["collection_name"]
+                    and "ptCorrection" in events[prefix].fields
+                ):
+                    pt_corrected = events[prefix].pt * events[prefix].ptCorrection
+                    correction_factor = ak.where(
+                        events[prefix].pt > 0, pt_corrected / events[prefix].pt, 1.0
+                    )
+                    mass_field = mass_field * correction_factor
+                    pt_field = pt_corrected
+
+            # getting the softmaxed scores for the next gen L1 jets
+            if prefix == CONFIG["l1ng"]["collection_name"] and CONFIG["l1ng"][
+                "collection_name"
+            ].endswith("NG"):
+                l1_tag_scores = {
+                    field: events[prefix][field]
+                    for field in events[prefix].fields
+                    if field.endswith("Score")
+                }
+                for score in l1_tag_scores.keys():
+                    events[prefix, score] = l1_tag_scores[score]
+
+                b_v_udscg_score = events[prefix]["bTagScore"] / (
+                    events[prefix]["bTagScore"]
+                    + events[prefix]["cTagScore"]
+                    + events[prefix]["udsTagScore"]
+                    + events[prefix]["gTagScore"]
+                )
+                c_v_b_score = events[prefix]["cTagScore"] / (
+                    events[prefix]["cTagScore"] + events[prefix]["bTagScore"]
+                )
+
+                events[prefix, "b_v_udscg_score"] = b_v_udscg_score
+                events[prefix, "c_v_b_score"] = c_v_b_score
+
+            events[prefix, "vector"] = ak.zip(
+                {
+                    "pt": pt_field,
+                    "eta": events[prefix].eta,
+                    "phi": events[prefix].phi,
+                    "mass": mass_field,
+                },
+                with_name="Momentum4D",
+            )
+            et_field = np.sqrt(pt_field**2 + mass_field**2) * np.cosh(
+                events[prefix].eta
+            )
+            events[prefix, "et"] = et_field
+
+            e_field = np.sqrt(
+                (pt_field * np.cosh(events[prefix].eta)) ** 2 + mass_field**2
+            )
+            events[prefix, "e"] = e_field
+
+    print(f"Loaded and restructured {len(events)} events.")
+    return events
+
+
+def select_gen_b_quarks_from_higgs(events):
+    """
+    Finds all b-quarks that are direct descendants of a Higgs boson.
+    """
+    print("Selecting gen-level b-quarks...")
+    is_higgs = events.GenPart.pdgId == 25
+    higgs_indices = ak.local_index(events.GenPart)[is_higgs]
+
+    is_b = abs(events.GenPart.pdgId) == 5
+    b_mother_idx = events.GenPart.genPartIdxMother
+
+    b_mother_idx_expanded = b_mother_idx[:, :, None]
+    higgs_indices_expanded = higgs_indices[:, None, :]
+
+    comparison_b = b_mother_idx_expanded == higgs_indices_expanded
+    has_higgs_mother_b = ak.any(comparison_b, axis=2)
+
+    is_b_from_H = is_b & has_higgs_mother_b
+    gen_b_quarks_from_H = events.GenPart[is_b_from_H]
+
+    print(f"Found {ak.sum(ak.num(gen_b_quarks_from_H))} b-quarks from Higgs decays.")
+    return gen_b_quarks_from_H
+
+
+def select_gen_higgs(events):
+    """
+    Finds all the Higgs bosons produced in the events.
+    """
+    is_higgs = events.GenPart.pdgId == 25
+    print(f"Found {ak.sum(ak.num(events.GenPart[is_higgs]))} Higgs bosons.")
+    return events.GenPart[is_higgs]
+
+
+def select_gen_quarks_gluons(events, config=None):
+    """
+    Selects gen-level quarks (u, d, s, c, b: |pdgId| 1-5) and gluons (pdgId 21)
+    from the GenPart collection. Applies kinematic cuts from the gen config section.
+    Used for matching clustered jets in QCD background samples.
+    """
+    gen = events.GenPart
+    abs_pdg = abs(gen.pdgId)
+    is_quark_or_gluon = ((abs_pdg >= 1) & (abs_pdg <= 5)) | (abs_pdg == 21)
+    gen_partons = gen[is_quark_or_gluon]
+
+    if config is not None:
+        pt_cut = config["gen"]["pt_cut"]
+        eta_cut = config["gen"]["eta_cut"]
+        gen_partons = gen_partons[
+            (gen_partons.pt > pt_cut) & (abs(gen_partons.eta) < eta_cut)
+        ]
+
+    n_total = ak.sum(ak.num(gen_partons))
+    print(f"  Selected {n_total} gen quarks/gluons after cuts")
+    return gen_partons
+
+
+def select_gen_b_quarks_by_status(events, config=None):
+    """
+    Selects gen-level b-quarks (|pdgId| == 5) from the GenPart collection
+    using statusFlags bits rather than requiring a Higgs mother.
+
+    Requires:
+      - isLastCopy       (bit 13)  — final copy in the parton shower
+      - fromHardProcess  (bit  8)  — from the hard scattering process
+        Commented out right now
+
+    This is appropriate for QCD samples where b-quarks do not come from Higgs
+    but we still want to identify "real" gen b-quark jets for labelling.
+
+    Parameters
+    ----------
+    events : awkward.Array
+        Events containing a GenPart collection with statusFlags field.
+    config : dict, optional
+        If provided, applies pT and eta cuts from config["gen"].
+
+    Returns
+    -------
+    gen_b_quarks : awkward.Array
+        Selected gen b-quarks.
+    """
+    gen = events.GenPart
+    abs_pdg = abs(gen.pdgId)
+
+    is_b = abs_pdg == 5
+    is_last_copy = (gen.statusFlags & (1 << 13)) > 0  # bit 13
+    # from_hard_process = (gen.statusFlags & (1 << 8)) > 0    # bit 8
+
+    gen_b_quarks = gen[is_b & is_last_copy]
+
+    if config is not None:
+        pt_cut = config["gen"]["pt_cut"]
+        eta_cut = config["gen"]["eta_cut"]
+        gen_b_quarks = gen_b_quarks[
+            (gen_b_quarks.pt > pt_cut) & (abs(gen_b_quarks.eta) < eta_cut)
+        ]
+
+    n_total = ak.sum(ak.num(gen_b_quarks))
+    print(
+        f"  Selected {n_total} gen b-quarks (isLastCopy & fromHardProcess) after cuts"
+    )
+    return gen_b_quarks
+
+
+def apply_custom_cuts(reco_jets, config, key, kinematic_only=False, return_jets=True):
+    """
+    Apply custom cuts to a jet collection.
+
+    Parameters
+    ----------
+    reco_jets : awkward.Array
+        Jet collection (offline or L1).
+    config : dict
+        Global CONFIG dict.
+    key : str
+        Either "offline" or "l1" to select the appropriate config.
+    kinematic_only : bool
+        If True, only apply kinematic cuts, i.e., pt and eta cuts
+        If False, apply custom tagger cuts as well
+    return_jets : bool
+        If True, return the filtered jets.
+        If False, return the mask applied to the jets.
+    """
+    subcfg = config[key]
+
+    pt_cut = subcfg["pt_cut"]
+    eta_cut = subcfg["eta_cut"]
+
+    print(f"\nApplying custom pT cut of {pt_cut} GeV for {key} jets...")
+    pt_mask = reco_jets.pt > pt_cut
+    eta_mask = abs(reco_jets.eta) < eta_cut
+    final_mask = pt_mask & eta_mask
+
+    if kinematic_only:
+        pass
+    else:
+        b_tag_cut = subcfg["b_tag_cut"]
+        tagger_name = subcfg["tagger_name"]
+        print(f"Applying custom cuts for {tagger_name} ({key})...")
+
+        if key == "offline":
+            charm_veto_cut = subcfg["charm_veto_cut"]
+            electron_veto_cut = subcfg["electron_veto_cut"]
+            muon_veto_cut = subcfg["muon_veto_cut"]
+
+            if tagger_name.startswith("btagPNet"):
+                b_jet_mask = reco_jets.btagPNetB > b_tag_cut
+                charm_veto_mask = reco_jets.btagPNetCvB < charm_veto_cut
+                final_mask = final_mask & charm_veto_mask & b_jet_mask
+
+            elif tagger_name.startswith("btagUParTAK4"):
+                b_jet_mask = reco_jets.btagUParTAK4probb > b_tag_cut
+                charm_veto_mask = reco_jets.btagUParTAK4CvB < charm_veto_cut
+                electron_veto_mask = reco_jets.btagUParTAK4Ele < electron_veto_cut
+                muon_veto_mask = reco_jets.btagUParTAK4Mu < muon_veto_cut
+                final_mask = (
+                    final_mask
+                    & charm_veto_mask
+                    & electron_veto_mask
+                    & muon_veto_mask
+                    & b_jet_mask
+                )
+
+        elif key == "l1ng":
+            # For L1, just apply the tagger cut generically
+            tag_mask = getattr(reco_jets, tagger_name) > b_tag_cut
+            final_mask = final_mask & tag_mask
+
+        elif key == "l1ext":
+            tag_mask = getattr(reco_jets, tagger_name) > b_tag_cut
+            final_mask = final_mask & tag_mask
+
+    if not return_jets:
+        return final_mask
+    else:
+        reco_jets = reco_jets[final_mask]
+        return reco_jets
+
+
+def one_hot_encode_l1_puppi(flat_ids, n_classes=5):
+    """One-hot encodes class labels present in the L1 Puppi collection
+
+    Args:
+        flat_ids (_type_): Assuming ids are in the range [0, n_classes-1].
+                            Shape of flat_ids: [n_jets, n_constituents]
+        n_classes (int, optional): Number of classes for one-hot encoding. Defaults to 5.
+
+    Returns:
+        one_hot: One-hot encoded array of shape [n_jets, n_constituents, n_classes]
+    """
+    one_hot = np.zeros(
+        (flat_ids.shape[0], flat_ids.shape[1], n_classes), dtype=np.float32
+    )
+    for i in range(n_classes):
+        one_hot[..., i] = (flat_ids == i).astype(np.float32)
+    return one_hot
+
+
+def one_hot_decode(one_hot_ids):
+    return np.argmax(one_hot_ids, axis=-1)
+
+
+def load_event_level_data(
+    file_pattern,
+    tree_name="Events",
+    puppi_collection="L1ExtPuppi",
+    jet_collection="Jet",
+    max_events=None,
+):
+    """
+    Loads all L1ExtPuppi particle candidates and offline Jet collection
+    from ROOT files for event-level classification.
+
+    Returns (puppi_events, jet_events) as awkward arrays.
+    Does NOT apply cuts or trigger emulation.
+
+    Parameters
+    ----------
+    file_pattern : str
+        Glob pattern for ROOT files (e.g. "data/hh4b/data_*.root").
+    tree_name : str
+        TTree name inside the ROOT files.
+    puppi_collection : str
+        Name of the PUPPI particle collection (default: "L1ExtPuppi").
+    jet_collection : str
+        Name of the offline jet collection (default: "Jet").
+    max_events : int or None
+        Maximum number of events to load.
+
+    Returns
+    -------
+    puppi_events : ak.Array
+        Per-event ragged arrays with fields: pt, eta, phi, charge, dxy, z0,
+        id, puppiWeight.
+    jet_events : ak.Array
+        Per-event ragged arrays with fields: pt, eta, phi, btagPNetB.
+    n_events : int
+        Number of events loaded.
+    """
+    print(f"Loading event-level data from {file_pattern}...")
+
+    puppi_branches = [
+        f"{puppi_collection}_{f}"
+        for f in ["pt", "eta", "phi", "charge", "dxy", "z0", "id", "puppiWeight"]
+    ]
+    jet_branches = [f"{jet_collection}_{f}" for f in ["pt", "eta", "phi", "btagPNetB"]]
+
+    try:
+        events = uproot.concatenate(
+            f"{file_pattern}:{tree_name}",
+            expressions=puppi_branches + jet_branches,
+            library="ak",
+            entry_stop=max_events,
+        )
+    except FileNotFoundError:
+        print(f"Error: No files found matching '{file_pattern}'.")
+        raise
+
+    # Reshape flat branches into nested objects
+    puppi_fields = {
+        f.replace(f"{puppi_collection}_", ""): events[f] for f in puppi_branches
+    }
+    puppi_events = ak.zip(puppi_fields)
+
+    jet_fields = {f.replace(f"{jet_collection}_", ""): events[f] for f in jet_branches}
+    jet_events = ak.zip(jet_fields)
+
+    n_events = len(events)
+    print(f"Loaded {n_events} events with L1ExtPuppi particles and offline jets.")
+    return puppi_events, jet_events, n_events
