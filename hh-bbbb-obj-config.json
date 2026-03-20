@@ -1,11 +1,16 @@
 {
-    "file_pattern": "/rds/general/user/at3722/home/root-obj-perf/data/hh4b/data_*.root",
+    "physics": {
+        "luminosity_fb": 1000,
+        "signal_xsec_pb": 0.0113,
+        "n_gen_signal": 50000
+    },
+    "file_pattern": "/Users/adityatandon/Documents/College/Physics/Year 4/Neural SBI/root-obj-perf/data/hh4b/data_*.root",
     "tree_name": "Events",
     "max_events": null,
     "matching_cone_size": 0.4,
     "gen": {
         "collection_name": "GenPart",
-        "pt_cut": 20.0,
+        "pt_cut": 0.0,
         "eta_cut": 2.3
     },
     "load_masks_from_file": true,
@@ -17,7 +22,7 @@
         "charm_veto_cut": 1.0,
         "electron_veto_cut": 1.0,
         "muon_veto_cut": 1.0,
-        "pt_cut": 25.0,
+        "pt_cut": 0.0,
         "eta_cut": 2.4
     },
     "l1ng": {
@@ -28,14 +33,14 @@
         "charm_veto_cut": 1.0,
         "electron_veto_cut": 1.0,
         "muon_veto_cut": 1.0,
-        "pt_cut": 25.0,
+        "pt_cut": 0.0,
         "eta_cut": 2.4
     },
     "l1ext": {
         "collection_name": "L1puppiExtJetSC4",
         "tagger_name": "btagScore",
         "b_tag_cut": 0.37053,
-        "pt_cut": 25.0,
+        "pt_cut": 0.0,
         "eta_cut": 2.4
     },
     "l1barrelextpuppi": {
@@ -44,7 +49,7 @@
         "b_tag_cut": 0.0,
         "pt_cut": 0.0,
         "eta_cut": 2.4,
-        "jet_pt_cut": 25.0,
+        "jet_pt_cut": 0.0,
         "jet_eta_cut": 2.4
     },
     "l1extpuppi": {
@@ -53,7 +58,7 @@
         "b_tag_cut": 0.0,
         "pt_cut": 0.0,
         "eta_cut": 2.4,
-        "jet_pt_cut": 25.0,
+        "jet_pt_cut": 0.0,
         "jet_eta_cut": 2.4
     },
     "l1barrelextpf": {
@@ -62,7 +67,7 @@
         "b_tag_cut": 0.0,
         "pt_cut": 0.0,
         "eta_cut": 2.4,
-        "jet_pt_cut": 25.0,
+        "jet_pt_cut": 0.0,
         "jet_eta_cut": 2.4
     },
     "l1extpf": {
@@ -71,74 +76,82 @@
         "b_tag_cut": 0.0,
         "pt_cut": 0.0,
         "eta_cut": 2.4,
-        "jet_pt_cut": 25.0,
+        "jet_pt_cut": 0.0,
         "jet_eta_cut": 2.4
     },
-    "QCD_background":
+    "QCD_background": 
     {
         "qcd_pt_20_30": {
-            "file_pattern": "/rds/general/user/at3722/home/root-obj-perf/data/QCD_Pt-20To30/data_*.root",
+            "file_pattern": "/Users/adityatandon/Documents/College/Physics/Year 4/Neural SBI/root-obj-perf/data/phase2_msc/QCD_Pt-20To30/data_*.root",
             "tree_name": "Events",
-            "max_events": 100,
-            "weight": 4.329e8, 
+            "max_events": null,
+            "weight": 4.329e8,
+            "n_gen": 471000,
             "pt_range": [20, 30]
         },
         "qcd_pt_30_50": {
-            "file_pattern": "/rds/general/user/at3722/home/root-obj-perf/data/QCD_Pt-30To50/data_*.root",
+            "file_pattern": "/Users/adityatandon/Documents/College/Physics/Year 4/Neural SBI/root-obj-perf/data/phase2_msc/QCD_Pt-30To50/data_*.root",
             "tree_name": "Events",
-            "max_events": 100,
+            "max_events": null,
             "weight": 1.172e8,
+            "n_gen": 483000,
             "pt_range": [30, 50]
         },
         "qcd_pt_50_80": {
-            "file_pattern": "/rds/general/user/at3722/home/root-obj-perf/data/QCD_Pt-50To80/data_*.root",
+            "file_pattern": "/Users/adityatandon/Documents/College/Physics/Year 4/Neural SBI/root-obj-perf/data/phase2_msc/QCD_Pt-50To80/data_*.root",
             "tree_name": "Events",
-            "max_events": 100,
+            "max_events": null,
             "weight": 1.749e7,
+            "n_gen": 298000,
             "pt_range": [50, 80]
         },
         "qcd_pt_80_120": {
-            "file_pattern": "/rds/general/user/at3722/home/root-obj-perf/data/QCD_Pt-80To120/data_*.root",
+            "file_pattern": "/Users/adityatandon/Documents/College/Physics/Year 4/Neural SBI/root-obj-perf/data/phase2_msc/QCD_Pt-80To120/data_*.root",
             "tree_name": "Events",
-            "max_events": 100,
+            "max_events": null,
             "weight": 2.657e6,
+            "n_gen": 148000,
             "pt_range": [80, 120]
         },
         "qcd_pt_120_170": {
-            "file_pattern": "/rds/general/user/at3722/home/root-obj-perf/data/QCD_Pt-120To170/data_*.root",
+            "file_pattern": "/Users/adityatandon/Documents/College/Physics/Year 4/Neural SBI/root-obj-perf/data/phase2_msc/QCD_Pt-120To170/data_*.root",
             "tree_name": "Events",
-            "max_events": 100000,
+            "max_events": null,
             "weight": 4.678e5,
+            "n_gen": 99000,
             "pt_range": [120, 170]
         },
         "qcd_pt_170_300": {
-            "file_pattern": "/rds/general/user/at3722/home/root-obj-perf/data/QCD_Pt-170To300/data_*.root",
+            "file_pattern": "/Users/adityatandon/Documents/College/Physics/Year 4/Neural SBI/root-obj-perf/data/phase2_msc/QCD_Pt-170To300/data_*.root",
             "tree_name": "Events",
-            "max_events": 100000,
+            "max_events": null,
             "weight": 1.203e5,
+            "n_gen": 99000,
             "pt_range": [170, 300]
         },
         "qcd_pt_300_470": {
-            "file_pattern": "/rds/general/user/at3722/home/root-obj-perf/data/QCD_Pt-300To470/data_*.root",
+            "file_pattern": "/Users/adityatandon/Documents/College/Physics/Year 4/Neural SBI/root-obj-perf/data/phase2_msc/QCD_Pt-300To470/data_*.root",
             "tree_name": "Events",
-            "max_events": 100000,
+            "max_events": null,
             "weight": 8.157e3,
+            "n_gen": 99000,
             "pt_range": [300, 470]
         },
         "qcd_pt_470_600": {
-            "file_pattern": "/rds/general/user/at3722/home/root-obj-perf/data/QCD_Pt-470To600/data_*.root",
+            "file_pattern": "/Users/adityatandon/Documents/College/Physics/Year 4/Neural SBI/root-obj-perf/data/phase2_msc/QCD_Pt-470To600/data_*.root",
             "tree_name": "Events",
-            "max_events": 100000,
+            "max_events": null,
             "weight": 6.831e2,
+            "n_gen": 97000,
             "pt_range": [470, 600]
         },
         "qcd_pt_600_inf": {
-            "file_pattern": "/rds/general/user/at3722/home/root-obj-perf/data/QCD_Pt-600ToInf/data_*.root",
+            "file_pattern": "/Users/adityatandon/Documents/College/Physics/Year 4/Neural SBI/root-obj-perf/data/phase2_msc/QCD_Pt-600ToInf/data_*.root",
             "tree_name": "Events",
-            "max_events": 100000,
+            "max_events": null,
             "weight": 2.41e2,
+            "n_gen": 93000,
             "pt_range": [600, "inf"]
         }
     }
-
 }
