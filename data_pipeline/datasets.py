@@ -660,13 +660,13 @@ if __name__ == "__main__":
 
     # npz-to-h5
     p1 = sub.add_parser("npz-to-h5", help="Convert .npz → chunked HDF5")
-    p1.add_argument("npz_path", type=str, help="Path to the .npz file")
+    p1.add_argument("npz-path", type=str, help="Path to the .npz file")
     p1.add_argument("--h5-path", type=str, default=None, help="Output .h5 path (default: same name)")
     p1.add_argument("--chunk-size", type=int, default=512, help="HDF5 chunk size (default: 512)")
 
     # h5-to-npy
     p2 = sub.add_parser("h5-to-npy", help="Convert HDF5 → memory-mappable .npy files")
-    p2.add_argument("h5_path", type=str, help="Path to the .h5 file")
+    p2.add_argument("h5-path", type=str, help="Path to the .h5 file")
     p2.add_argument("--out-dir", type=str, default=None, help="Output directory (default: same as input)")
 
     args = parser.parse_args()
