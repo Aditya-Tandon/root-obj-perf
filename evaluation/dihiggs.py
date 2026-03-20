@@ -178,6 +178,58 @@ def compute_significance(
     }
 
 
+def compute_significance_at_luminosity(
+    sig_mh1, sig_mh2,
+    bkg_mh1, bkg_mh2,
+    bkg_raw_weights,
+    sigma_to_ngen,
+    n_gen_signal=None,
+    luminosity_fb=1000.0,
+    signal_xsec_pb=0.0113,
+    **kwargs,
+):
+    """Compute significance with proper luminosity scaling.
+
+    Convenience wrapper around ``compute_significance`` that handles
+    converting raw cross-section weights to expected event counts.
+
+    Parameters
+    ----------
+    sig_mh1, sig_mh2 : array-like
+        Leading/subleading Higgs masses for signal events.
+    bkg_mh1, bkg_mh2 : array-like
+        Leading/subleading Higgs masses for background events.
+    bkg_raw_weights : array-like
+        Raw QCD weights (Convention C: each event = sigma_bin).
+    sigma_to_ngen : dict
+        Maps sigma_bin (float) -> n_gen (int) per QCD pT bin.
+    n_gen_signal : int or None
+        Total generated signal events. If None, uses len(sig_mh1).
+    luminosity_fb : float
+        Target integrated luminosity in fb^-1.
+    signal_xsec_pb : float
+        Signal cross-section in pb.
+    **kwargs
+        Passed to ``compute_significance`` (region, rect_window, r_hh_cut, mh_centers).
+
+    Returns
+    -------
+    dict — same as ``compute_significance``
+    """
+    from evaluation.luminosity import signal_weight, scale_qcd_weights_raw
+
+    sig_w = signal_weight(
+        len(sig_mh1), luminosity_fb, signal_xsec_pb, n_gen_signal,
+    )
+    bkg_w = scale_qcd_weights_raw(
+        np.asarray(bkg_raw_weights, dtype=np.float64), sigma_to_ngen, luminosity_fb,
+    )
+    return compute_significance(
+        sig_mh1, sig_mh2, bkg_mh1, bkg_mh2,
+        sig_weights=sig_w, bkg_weights=bkg_w, **kwargs,
+    )
+
+
 def reconstruct_dihiggs(
     reco_jets_collection,
     gen_b_quarks,
