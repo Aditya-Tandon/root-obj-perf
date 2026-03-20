@@ -1093,6 +1093,7 @@ def generate_dataset_higgs_with_qcd_background(
     on_signal=True,
     cluster_dist_param=0.8,
     flatten_spectrum=False,
+    normalise_qcd_weights=False,
 ):
     """
     Build an AK8 Higgs-tagging training dataset:
@@ -1199,9 +1200,16 @@ def generate_dataset_higgs_with_qcd_background(
             qcd_cfg["tree_name"] = bin_cfg["tree_name"]
             qcd_cfg["max_events"] = bin_cfg["max_events"]
 
+            raw_w = bin_cfg["weight"]
+            if normalise_qcd_weights:
+                n_gen = bin_cfg.get("n_gen")
+                qcd_w = raw_w / n_gen if n_gen else raw_w
+            else:
+                qcd_w = raw_w
+
             X_chunk, y_chunk, mask_chunk, w_chunk = process_qcd_batch_for_higgs(
                 config=qcd_cfg,
-                qcd_weight=bin_cfg["weight"],
+                qcd_weight=qcd_w,
                 collections_to_load=qcd_coll_list,
                 n_constituents=num_constituents,
                 min_constituents=min_constituents,
@@ -1322,14 +1330,14 @@ def generate_dataset_higgs_with_qcd_background(
     print(f"  - Background jets:      {int((final_y == 0).sum())}")
     np.savez_compressed(
         output_file,
-        x=final_X,
+        x=final_X.astype(np.float32),
         y=final_y,
         mask=final_mask,
-        jet_pt=final_pt,
-        jet_eta=final_eta,
+        jet_pt=final_pt.astype(np.float32),
+        jet_eta=final_eta.astype(np.float32),
         weights=final_weights,
         weights_raw=raw_weights,
-        gen_pt=final_gen_pt,
+        gen_pt=final_gen_pt.astype(np.float32),
         qcd_weights=sample_weights,
     )
     print("Done.")
@@ -1346,6 +1354,7 @@ def generate_dataset_with_qcd_background(
     on_signal=True,
     cluster_dist_param=0.4,
     flatten_spectrum=False,
+    normalise_qcd_weights=False,
 ):
     """
     Build a training dataset where:
@@ -1464,9 +1473,16 @@ def generate_dataset_with_qcd_background(
             qcd_cfg["tree_name"] = bin_cfg["tree_name"]
             qcd_cfg["max_events"] = bin_cfg["max_events"]
 
+            raw_w = bin_cfg["weight"]
+            if normalise_qcd_weights:
+                n_gen = bin_cfg.get("n_gen")
+                qcd_w = raw_w / n_gen if n_gen else raw_w
+            else:
+                qcd_w = raw_w
+
             X_chunk, y_chunk, mask_chunk, w_chunk, gen_pt_chunk = process_qcd_batch(
                 config=qcd_cfg,
-                qcd_weight=bin_cfg["weight"],
+                qcd_weight=qcd_w,
                 collections_to_load=coll_list,
                 n_constituents=num_constituents,
                 min_constituents=min_constituents,
@@ -1624,14 +1640,14 @@ def generate_dataset_with_qcd_background(
     print(f"  - Background jets:      {int((final_y == 0).sum())}")
     np.savez_compressed(
         output_file,
-        x=final_X,
+        x=final_X.astype(np.float32),
         y=final_y,
         mask=final_mask,
-        jet_pt=final_pt,
-        jet_eta=final_eta,
+        jet_pt=final_pt.astype(np.float32),
+        jet_eta=final_eta.astype(np.float32),
         weights=final_weights,
         weights_raw=raw_weights,
-        gen_pt=final_gen_pt,
+        gen_pt=final_gen_pt.astype(np.float32),
         qcd_weights=sample_weights,
     )
 
@@ -1750,13 +1766,13 @@ def generate_dataset(
     print(f"  - Sample weights shape: {sample_weights.shape}")
     np.savez_compressed(
         output_file,
-        x=final_X,
+        x=final_X.astype(np.float32),
         y=final_y,
         mask=final_mask,
-        jet_pt=final_pt,
-        jet_eta=final_eta,
+        jet_pt=final_pt.astype(np.float32),
+        jet_eta=final_eta.astype(np.float32),
         weights=sample_weights,
-        gen_pt=final_gen_pt,
+        gen_pt=final_gen_pt.astype(np.float32),
     )
     print("Done.")
 
@@ -1834,6 +1850,14 @@ if __name__ == "__main__":
         help="Reweight both signal and background to flat pT-eta distributions. "
         "QCD cross-section weights are ignored; final weights are purely kinematic.",
     )
+    parser.add_argument(
+        "--normalise_qcd_weights",
+        type=_str2bool,
+        default=False,
+        help="Normalize QCD weights to sigma/N_gen instead of raw sigma. "
+        "Requires 'n_gen' in each QCD bin of the config. Default False for "
+        "backward compatibility with existing datasets.",
+    )
     args = parser.parse_args()
 
     print(f"Configuration:")
@@ -1851,6 +1875,7 @@ if __name__ == "__main__":
             min_constituents=1,
             on_signal=args.on_signal,
             flatten_spectrum=args.flatten_spectrum,
+            normalise_qcd_weights=args.normalise_qcd_weights,
         )
     elif args.use_qcd_background:
         # AK4 b-tagger dataset with QCD background
@@ -1863,6 +1888,7 @@ if __name__ == "__main__":
             min_constituents=1,
             on_signal=args.on_signal,
             flatten_spectrum=args.flatten_spectrum,
+            normalise_qcd_weights=args.normalise_qcd_weights,
         )
     else:
         # Signal-only or higgs_mode without QCD background
