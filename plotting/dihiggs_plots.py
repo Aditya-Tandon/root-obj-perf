@@ -31,14 +31,24 @@ def plot_mass_1d(
     sig_lead_mass, sig_sub_mass, sig_hh_mass,
     qcd_lead_mass=None, qcd_sub_mass=None, qcd_hh_mass=None,
     qcd_weights=None,
+    sig_weights=None,
     label="",
     sig_window_h=(90, 160),
     sig_window_hh=(250, 550),
+    density=True,
     figsize=(24, 7),
 ):
     """1x3 overlay of leading mH, subleading mH, and mHH distributions.
 
     Signal is shown filled; QCD background as dashed step histogram.
+
+    Parameters
+    ----------
+    density : bool
+        If True (default), plot normalised densities. If False, plot with
+        luminosity-scaled weights (pass sig_weights and qcd_weights).
+    sig_weights, qcd_weights : array-like or None
+        Per-event weights. Only used when density=False.
     """
     fig, axes = plt.subplots(1, 3, figsize=figsize)
     bins_h = np.linspace(0, 300, 61)
@@ -50,20 +60,24 @@ def plot_mass_1d(
         (axes[1], sig_sub_mass, qcd_sub_mass, bins_h, r"Subleading $m_H$ [GeV]", "Subleading Higgs"),
         (axes[2], sig_hh_mass, qcd_hh_mass, bins_hh, r"$m_{HH}$ [GeV]", r"$m_{HH}$"),
     ]:
+        hist_kw = dict(density=True) if density else {}
         if sig_m is not None and len(sig_m) > 0:
+            sw = None if density else sig_weights
             ax.hist(sig_m, bins=bins, histtype="stepfilled", alpha=0.3, color=color,
-                    label=f"Signal ({len(sig_m)})", density=True)
-            ax.hist(sig_m, bins=bins, histtype="step", linewidth=2, color=color, density=True)
+                    label=f"Signal ({len(sig_m)})", weights=sw, **hist_kw)
+            ax.hist(sig_m, bins=bins, histtype="step", linewidth=2, color=color,
+                    weights=sw, **hist_kw)
         if qcd_m is not None and len(qcd_m) > 0:
+            qw = None if density else qcd_weights
             ax.hist(qcd_m, bins=bins, histtype="step", linewidth=2, color="grey",
-                    linestyle="--", label=f"QCD ({len(qcd_m)})", density=True)
+                    linestyle="--", label=f"QCD ({len(qcd_m)})", weights=qw, **hist_kw)
         if bins is bins_h:
             ax.axvline(125, color="green", linestyle=":", linewidth=1.5)
             ax.axvspan(*sig_window_h, alpha=0.05, color="green")
         else:
             ax.axvspan(*sig_window_hh, alpha=0.05, color="green")
         ax.set_xlabel(xlabel)
-        ax.set_ylabel("Density")
+        ax.set_ylabel("Density" if density else "Expected events / bin")
         ax.set_title(f"{label} — {title_suffix}")
         ax.legend(fontsize=10)
 
@@ -76,6 +90,7 @@ def plot_mass_2d(
     sig_lead_mass, sig_sub_mass,
     qcd_lead_mass=None, qcd_sub_mass=None,
     qcd_weights=None,
+    sig_weights=None,
     label="",
     r_hh_cut=55.0,
     mh_centers=(125.0, 120.0),
@@ -85,6 +100,9 @@ def plot_mass_2d(
 
     Parameters
     ----------
+    qcd_weights, sig_weights : array-like or None
+        Per-event weights for hist2d binning. Pass luminosity-scaled weights
+        for physically meaningful colour scales.
     r_hh_cut : float
         Radius of the R_HH circle to draw.
     mh_centers : tuple
@@ -96,13 +114,14 @@ def plot_mass_2d(
     if n_panels == 1:
         axes = [axes]
 
-    panels = [("Signal", sig_lead_mass, sig_sub_mass, None)]
+    panels = [("Signal", sig_lead_mass, sig_sub_mass, sig_weights)]
     if qcd_lead_mass is not None and len(qcd_lead_mass) > 0:
         panels.append(("QCD", qcd_lead_mass, qcd_sub_mass, qcd_weights))
 
     for ax, (cat, lm, sm, w) in zip(axes, panels):
         if len(lm) > 0:
-            h = ax.hist2d(lm, sm, bins=[bins_2d, bins_2d], cmap="viridis")
+            hist_kw = dict(weights=w) if w is not None else {}
+            h = ax.hist2d(lm, sm, bins=[bins_2d, bins_2d], cmap="viridis", **hist_kw)
             fig.colorbar(h[3], ax=ax, label="Events")
         c1, c2 = mh_centers
         ax.axvline(c1, color="red", linestyle="--", linewidth=1.5, label=f"$m_H$ = {c1} GeV")
