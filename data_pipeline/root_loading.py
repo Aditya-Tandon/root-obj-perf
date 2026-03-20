@@ -398,10 +398,11 @@ def load_event_level_data(
     tree_name="Events",
     puppi_collection="L1ExtPuppi",
     jet_collection="Jet",
+    jet_tagger_field="btagPNetB",
     max_events=None,
 ):
     """
-    Loads all L1ExtPuppi particle candidates and offline Jet collection
+    Loads all particle candidates and a jet collection
     from ROOT files for event-level classification.
 
     Returns (puppi_events, jet_events) as awkward arrays.
@@ -416,7 +417,11 @@ def load_event_level_data(
     puppi_collection : str
         Name of the PUPPI particle collection (default: "L1ExtPuppi").
     jet_collection : str
-        Name of the offline jet collection (default: "Jet").
+        Name of the jet collection (default: "Jet" for offline jets;
+        use "L1puppiExtJetSC4" for l1ext jets).
+    jet_tagger_field : str
+        Branch suffix for the b-tagger score (default: "btagPNetB";
+        use "btagScore" for L1 collections).
     max_events : int or None
         Maximum number of events to load.
 
@@ -426,7 +431,7 @@ def load_event_level_data(
         Per-event ragged arrays with fields: pt, eta, phi, charge, dxy, z0,
         id, puppiWeight.
     jet_events : ak.Array
-        Per-event ragged arrays with fields: pt, eta, phi, btagPNetB.
+        Per-event ragged arrays with fields: pt, eta, phi, <jet_tagger_field>.
     n_events : int
         Number of events loaded.
     """
@@ -436,7 +441,7 @@ def load_event_level_data(
         f"{puppi_collection}_{f}"
         for f in ["pt", "eta", "phi", "charge", "dxy", "z0", "id", "puppiWeight"]
     ]
-    jet_branches = [f"{jet_collection}_{f}" for f in ["pt", "eta", "phi", "btagPNetB"]]
+    jet_branches = [f"{jet_collection}_{f}" for f in ["pt", "eta", "phi", jet_tagger_field]]
 
     try:
         events = uproot.concatenate(
