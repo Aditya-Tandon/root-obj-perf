@@ -1,28 +1,37 @@
 """
-Event-level dataset pipeline: ROOT → HDF5
+Event-level dataset pipeline: ROOT → .npz
 
 Converts L1ExtPuppi particle-level ROOT ntuples into event-level arrays
 suitable for training a ParticleTransformer binary classifier (HH→4b vs QCD).
 
-Feature layout (18 features, first 4 = [mass, pt, eta, phi] for PairwiseEmbedding):
+Feature layout (17 features, first 4 = [mass, pt, eta, phi] for PairwiseEmbedding):
   Col 0:  mass (GeV)       — estimated from particle type id
   Col 1:  pt (GeV)
   Col 2:  eta
   Col 3:  phi
-  Col 4:  ΔR from centroid
-  Col 5:  Δη from centroid
-  Col 6:  Δφ from centroid
-  Col 7:  ln(pT)
-  Col 8:  ln(E)
-  Col 9:  ln(pT / sum_pT)
-  Col 10: d0 (dxy)
-  Col 11: dz (z0)
-  Col 12: charge
-  Col 13–17: one-hot particle type (charged hadron, neutral hadron, photon, electron, muon)
+  Col 4:  dxy (d0)
+  Col 5:  z0 (dz)
+  Col 6:  charge
+  Col 7:  ln(pT / sum_pT)  — pT fraction relative to event sum
+  Col 8:  Δη from pT-weighted centroid
+  Col 9:  Δφ from pT-weighted centroid (wrapped to [−π, π])
+  Col 10: ΔR from pT-weighted centroid
+  Col 11: puppiWeight
+  Col 12–16: one-hot particle type (charged hadron, neutral hadron, photon, electron, muon)
+
+Output (.npz keys):
+  x           — (N, num_constituents, 18) float32 feature array
+  mask        — (N, num_constituents) bool validity mask
+  y           — (N,) float32 labels (1 = signal, 0 = background)
+  weights     — (N,) float32 kinematic reweighting weights
+  jet_pt      — (N,) float32 scalar HT (stored as jet_pt for compatibility)
+  jet_eta     — (N,) float32 zeros (placeholder)
+  gen_pt      — (N,) float32 zeros (placeholder)
+  qcd_weights — (N,) float32 per-event cross-section weights
 
 Usage:
-  python make_event_dataset.py --output data/event_level/event_hh4b_qcd.h5
-  python make_event_dataset.py --output data/event_level/event_hh4b_qcd.h5 --skip_trigger
+  python make_event_dataset.py --output data/event_level/event_hh4b_qcd.npz
+  python make_event_dataset.py --output data/event_level/event_hh4b_qcd.npz --skip_trigger
 """
 
 import os
@@ -32,7 +41,6 @@ import argparse
 
 import numpy as np
 import awkward as ak
-import h5py
 from tqdm import tqdm
 
 from data_pipeline.root_loading import load_event_level_data
@@ -40,14 +48,14 @@ from data_pipeline.root_loading import load_event_level_data
 # L1ExtPuppi particle type id → estimated mass (GeV)
 # id: 0=charged hadron, 1=neutral hadron, 2=photon, 3=electron, 4=muon
 PARTICLE_MASSES = {
-    0: 0.13957,   # charged pion mass
-    1: 0.13957,   # neutral pion mass (approximate)
-    2: 0.0,       # photon
+    0: 0.13957,  # charged pion mass
+    1: 0.13957,  # neutral pion mass (approximate)
+    2: 0.0,  # photon
     3: 0.000511,  # electron
-    4: 0.10566,   # muon
+    4: 0.10566,  # muon
 }
 
-N_FEATURES = 18
+N_FEATURES = 17
 N_PARTICLE_TYPES = 5
 
 
@@ -56,20 +64,21 @@ def passes_trigger_emulation(
     pt_thresholds=(75, 60, 45, 40),
     ht_threshold=330.0,
     n_btag_required=3,
-    btag_wp=0.2783,
+    btag_wp=0.37053,
+    btag_field="btagScore",
 ):
     """
-    Emulates CMS resolved-channel HH→4b HLT trigger using offline jets.
+    Emulates CMS resolved-channel HH→4b HLT trigger using L1Ext jets.
 
     Requirements:
       - ≥4 jets with pT above descending thresholds [75, 60, 45, 40] GeV
       - Scalar HT (sum of all jet pT) > 330 GeV
-      - ≥3 jets with btagPNetB > working point
+      - ≥3 jets with <btag_field> > btag_wp
 
     Parameters
     ----------
     jet_events : ak.Array
-        Per-event jet arrays with fields pt, btagPNetB.
+        Per-event jet arrays with fields pt and <btag_field>.
     pt_thresholds : tuple
         Descending pT thresholds for the leading 4 jets.
     ht_threshold : float
@@ -77,7 +86,9 @@ def passes_trigger_emulation(
     n_btag_required : int
         Minimum number of b-tagged jets.
     btag_wp : float
-        B-tag working point (PNetB score threshold).
+        B-tag working point threshold (default: 0.37053 for l1ext btagScore).
+    btag_field : str
+        Name of the b-tagger score field in jet_events (default: "btagScore").
 
     Returns
     -------
@@ -96,7 +107,9 @@ def passes_trigger_emulation(
     pt_cuts = np.ones(len(jet_events), dtype=bool)
     for i, thr in enumerate(pt_thresholds):
         # For events with fewer jets, pad with False
-        jet_pt_i = ak.fill_none(ak.pad_none(jets_sorted.pt, i + 1, clip=True)[:, i], 0.0)
+        jet_pt_i = ak.fill_none(
+            ak.pad_none(jets_sorted.pt, i + 1, clip=True)[:, i], 0.0
+        )
         pt_cuts &= ak.to_numpy(jet_pt_i) > thr
 
     # Scalar HT
@@ -104,14 +117,14 @@ def passes_trigger_emulation(
     ht_cut = ht > ht_threshold
 
     # B-tag count
-    n_btag = ak.to_numpy(ak.sum(jet_events.btagPNetB > btag_wp, axis=1))
+    n_btag = ak.to_numpy(ak.sum(jet_events[btag_field] > btag_wp, axis=1))
     btag_cut = n_btag >= n_btag_required
 
     mask = ak.to_numpy(has_4_jets) & pt_cuts & ht_cut & btag_cut
     return mask
 
 
-def extract_event_features(puppi_cands, n_max_particles=128):
+def extract_event_features(puppi_cands, num_constituents=128):
     """
     Extract 18 features from L1ExtPuppi candidates for a single event.
 
@@ -120,13 +133,13 @@ def extract_event_features(puppi_cands, n_max_particles=128):
     puppi_cands : ak.Array
         All L1ExtPuppi candidates for one event, with fields:
         pt, eta, phi, charge, dxy, z0, id, puppiWeight.
-    n_max_particles : int
+    num_constituents : int
         Max number of particles to keep (sorted by pT descending).
 
     Returns
     -------
-    x : np.ndarray, shape (n_max_particles, 18), float32
-    mask : np.ndarray, shape (n_max_particles,), bool
+    x : np.ndarray, shape (num_constituents, 18), float32
+    mask : np.ndarray, shape (num_constituents,), bool
     """
     # Sort by pT descending
     sort_idx = ak.argsort(puppi_cands.pt, ascending=False)
@@ -140,8 +153,9 @@ def extract_event_features(puppi_cands, n_max_particles=128):
     dxy = ak.to_numpy(cands.dxy).astype(np.float32)
     z0 = ak.to_numpy(cands.z0).astype(np.float32)
     pid = ak.to_numpy(cands.id).astype(np.int32)
+    puppi_weight = ak.to_numpy(cands.puppiWeight).astype(np.float32)
 
-    n_real = min(len(pt), n_max_particles)
+    n_real = min(len(pt), num_constituents)
 
     # Truncate
     pt = pt[:n_real]
@@ -153,10 +167,12 @@ def extract_event_features(puppi_cands, n_max_particles=128):
     pid = pid[:n_real]
 
     # Mass from particle type
-    mass = np.array([PARTICLE_MASSES.get(int(p), 0.13957) for p in pid], dtype=np.float32)
+    mass = np.array(
+        [PARTICLE_MASSES.get(int(p), 0.13957) for p in pid], dtype=np.float32
+    )
 
     # Energy: E = sqrt((pt * cosh(eta))^2 + m^2)
-    energy = np.sqrt((pt * np.cosh(eta)) ** 2 + mass ** 2)
+    energy = np.sqrt((pt * np.cosh(eta)) ** 2 + mass**2)
 
     # pT-weighted centroid
     sum_pt = pt.sum()
@@ -173,7 +189,7 @@ def extract_event_features(puppi_cands, n_max_particles=128):
     # Relative coordinates
     d_eta = eta - eta_c
     d_phi = np.arctan2(np.sin(phi - phi_c), np.cos(phi - phi_c))  # wrap to [-pi, pi]
-    d_r = np.sqrt(d_eta ** 2 + d_phi ** 2)
+    d_r = np.sqrt(d_eta**2 + d_phi**2)
 
     # Log features (clip to avoid log(0))
     ln_pt = np.log(np.clip(pt, 1e-6, None))
@@ -186,27 +202,28 @@ def extract_event_features(puppi_cands, n_max_particles=128):
         one_hot[:, i] = (pid == i).astype(np.float32)
 
     # Assemble feature array: (n_real, 18)
-    features = np.column_stack([
-        mass,       # col 0
-        pt,         # col 1
-        eta,        # col 2
-        phi,        # col 3
-        d_r,        # col 4
-        d_eta,      # col 5
-        d_phi,      # col 6
-        ln_pt,      # col 7
-        ln_e,       # col 8
-        ln_pt_rel,  # col 9
-        dxy,        # col 10
-        z0,         # col 11
-        charge,     # col 12
-        one_hot,    # cols 13-17
-    ])
+    features = np.column_stack(
+        [
+            mass,  # col 0
+            pt,  # col 1
+            eta,  # col 2
+            phi,  # col 3
+            dxy,  # col 4
+            z0,  # col 5
+            charge,  # col 6
+            ln_pt_rel,  # col 7
+            d_eta,  # col 8
+            d_phi,  # col 9
+            d_r,  # col 10
+            puppi_weight,  # col 11
+            one_hot,  # cols 12-16
+        ]
+    )
 
-    # Pad to n_max_particles
-    x = np.zeros((n_max_particles, N_FEATURES), dtype=np.float32)
+    # Pad to num_constituents
+    x = np.zeros((num_constituents, N_FEATURES), dtype=np.float32)
     x[:n_real] = features
-    mask = np.zeros(n_max_particles, dtype=bool)
+    mask = np.zeros(num_constituents, dtype=bool)
     mask[:n_real] = True
 
     return x, mask
@@ -214,23 +231,23 @@ def extract_event_features(puppi_cands, n_max_particles=128):
 
 def generate_event_dataset(
     config_path="hh-bbbb-obj-config.json",
-    output_h5="data/event_level/event_hh4b_qcd.h5",
-    n_max_particles=128,
-    skip_trigger=False,
+    output_npz="data/event_level/event_hh4b_qcd.npz",
+    num_constituents=128,
+    skip_trigger=True,
     max_signal_events=None,
     max_qcd_events_per_bin=None,
 ):
     """
-    Full pipeline: load ROOT files → trigger emulation → feature extraction
-    → kinematic reweighting → HDF5 output.
+    Full pipeline: load ROOT files → feature extraction
+    → kinematic reweighting → compressed .npz output.
 
     Parameters
     ----------
     config_path : str
         Path to hh-bbbb-obj-config.json.
-    output_h5 : str
-        Output HDF5 file path.
-    n_max_particles : int
+    output_npz : str
+        Output .npz file path (saved with np.savez_compressed).
+    num_constituents : int
         Max particles per event.
     skip_trigger : bool
         If True, skip trigger emulation (use all events).
@@ -241,6 +258,12 @@ def generate_event_dataset(
     """
     with open(config_path, "r") as f:
         config = json.load(f)
+
+    # ── L1Ext jet collection config (used for trigger emulation) ─────
+    l1ext_cfg = config["l1ext"]
+    l1ext_collection = l1ext_cfg["collection_name"]  # "L1puppiExtJetSC4"
+    l1ext_tagger = l1ext_cfg["tagger_name"]  # "btagScore"
+    l1ext_btag_wp = l1ext_cfg["b_tag_cut"]  # 0.37053
 
     all_x = []
     all_mask = []
@@ -253,6 +276,8 @@ def generate_event_dataset(
     sig_puppi, sig_jets, n_sig = load_event_level_data(
         file_pattern=config["file_pattern"],
         tree_name=config["tree_name"],
+        jet_collection=l1ext_collection,
+        jet_tagger_field=l1ext_tagger,
         max_events=max_signal_events,
     )
 
@@ -260,9 +285,15 @@ def generate_event_dataset(
         sig_mask = np.ones(n_sig, dtype=bool)
         print(f"Skipping trigger: keeping all {n_sig} signal events")
     else:
-        sig_mask = passes_trigger_emulation(sig_jets)
-        print(f"Trigger emulation: {sig_mask.sum()}/{n_sig} signal events pass "
-              f"({100 * sig_mask.sum() / n_sig:.1f}%)")
+        sig_mask = passes_trigger_emulation(
+            sig_jets,
+            btag_wp=l1ext_btag_wp,
+            btag_field=l1ext_tagger,
+        )
+        print(
+            f"Trigger emulation: {sig_mask.sum()}/{n_sig} signal events pass "
+            f"({100 * sig_mask.sum() / n_sig:.1f}%)"
+        )
 
     sig_puppi_pass = sig_puppi[sig_mask]
     sig_jets_pass = sig_jets[sig_mask]
@@ -270,7 +301,7 @@ def generate_event_dataset(
 
     print(f"Extracting features for {n_sig_pass} signal events...")
     for i in tqdm(range(n_sig_pass), desc="Signal features"):
-        x, m = extract_event_features(sig_puppi_pass[i], n_max_particles)
+        x, m = extract_event_features(sig_puppi_pass[i], num_constituents)
         all_x.append(x)
         all_mask.append(m)
 
@@ -292,6 +323,8 @@ def generate_event_dataset(
             qcd_puppi, qcd_jets, n_qcd = load_event_level_data(
                 file_pattern=bin_cfg["file_pattern"],
                 tree_name=bin_cfg["tree_name"],
+                jet_collection=l1ext_collection,
+                jet_tagger_field=l1ext_tagger,
                 max_events=max_evts,
             )
         except (FileNotFoundError, Exception) as e:
@@ -302,9 +335,15 @@ def generate_event_dataset(
             qcd_mask = np.ones(n_qcd, dtype=bool)
             print(f"  Skipping trigger: keeping all {n_qcd} events")
         else:
-            qcd_mask = passes_trigger_emulation(qcd_jets)
-            print(f"  Trigger: {qcd_mask.sum()}/{n_qcd} events pass "
-                  f"({100 * qcd_mask.sum() / max(n_qcd, 1):.1f}%)")
+            qcd_mask = passes_trigger_emulation(
+                qcd_jets,
+                btag_wp=l1ext_btag_wp,
+                btag_field=l1ext_tagger,
+            )
+            print(
+                f"  Trigger: {qcd_mask.sum()}/{n_qcd} events pass "
+                f"({100 * qcd_mask.sum() / max(n_qcd, 1):.1f}%)"
+            )
 
         if qcd_mask.sum() == 0:
             print(f"  No events pass trigger, skipping {bin_name}")
@@ -314,13 +353,14 @@ def generate_event_dataset(
         qcd_jets_pass = qcd_jets[qcd_mask]
         n_qcd_pass = int(qcd_mask.sum())
 
-        # Per-event cross-section weight: xsec / n_generated
-        # n_generated is the total events in this bin (before trigger)
-        per_event_xsec = xsec_weight / n_qcd
+        # Per-event cross-section weight: xsec / n_gen
+        # Use n_gen from config if available, else fall back to n_loaded
+        n_gen = bin_cfg.get("n_gen", n_qcd)
+        per_event_xsec = xsec_weight / n_gen
 
         print(f"  Extracting features for {n_qcd_pass} QCD events...")
         for i in tqdm(range(n_qcd_pass), desc=f"  {bin_name}"):
-            x, m = extract_event_features(qcd_puppi_pass[i], n_max_particles)
+            x, m = extract_event_features(qcd_puppi_pass[i], num_constituents)
             all_x.append(x)
             all_mask.append(m)
 
@@ -330,8 +370,8 @@ def generate_event_dataset(
         all_qcd_weights.extend([per_event_xsec] * n_qcd_pass)
 
     # ── Assemble arrays ──────────────────────────────────────────────
-    X = np.stack(all_x, axis=0)           # (N, n_max_particles, 18)
-    mask_arr = np.stack(all_mask, axis=0) # (N, n_max_particles)
+    X = np.stack(all_x, axis=0)  # (N, num_constituents, 18)
+    mask_arr = np.stack(all_mask, axis=0)  # (N, num_constituents)
     y = np.array(all_y, dtype=np.float32)
     ht = np.array(all_ht, dtype=np.float32)
     qcd_w = np.array(all_qcd_weights, dtype=np.float32)
@@ -348,7 +388,7 @@ def generate_event_dataset(
 
     weights = compute_kinematic_weights(
         pt=ht,
-        eta=np.zeros_like(ht),    # dummy — 1D reweighting only
+        eta=np.zeros_like(ht),  # dummy — 1D reweighting only
         y=y,
         n_bins_pt=50,
         n_bins_eta=1,
@@ -357,59 +397,66 @@ def generate_event_dataset(
         sample_weights=qcd_w,
     )
 
-    # ── Shuffle ──────────────────────────────────────────────────────
-    print("Shuffling dataset...")
-    rng = np.random.default_rng(42)
-    perm = rng.permutation(N)
-    X = X[perm]
-    mask_arr = mask_arr[perm]
-    y = y[perm]
-    weights = weights[perm]
-    ht = ht[perm]
-    qcd_w = qcd_w[perm]
+    # ── Write .npz ───────────────────────────────────────────────────
+    out_dir = os.path.dirname(output_npz)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    print(f"\nWriting compressed .npz to {output_npz}...")
 
-    # ── Write HDF5 ───────────────────────────────────────────────────
-    os.makedirs(os.path.dirname(output_h5), exist_ok=True)
-    print(f"\nWriting HDF5 to {output_h5}...")
-
-    with h5py.File(output_h5, "w") as f:
-        f.create_dataset("x", data=X, chunks=(min(512, N), n_max_particles, N_FEATURES),
-                         compression="lzf")
-        f.create_dataset("mask", data=mask_arr, chunks=(min(512, N), n_max_particles),
-                         compression="lzf")
-        f.create_dataset("y", data=y)
-        f.create_dataset("weights", data=weights)
-        f.create_dataset("jet_pt", data=ht)         # HT stored as jet_pt for compatibility
-        f.create_dataset("jet_eta", data=np.zeros(N, dtype=np.float32))
-        f.create_dataset("gen_pt", data=np.zeros(N, dtype=np.float32))
-        f.create_dataset("qcd_weights", data=qcd_w)
+    np.savez_compressed(
+        output_npz,
+        x=X,
+        mask=mask_arr,
+        y=y,
+        weights=weights,
+        jet_pt=ht,  # HT stored as jet_pt for compatibility
+        jet_eta=np.zeros(N, dtype=np.float32),
+        gen_pt=np.zeros(N, dtype=np.float32),
+        qcd_weights=qcd_w,
+    )
 
     print(f"Done. Dataset shape: x={X.shape}, y={y.shape}")
-    print(f"\nNext step: convert to mmap .npy for training:")
-    print(f"  python -m data_pipeline.datasets h5-to-npy "
-          f"'{output_h5}' --out-dir '{os.path.splitext(output_h5)[0]}_npy/'")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate event-level HH4b vs QCD dataset")
-    parser.add_argument("--config", type=str, default="hh-bbbb-obj-config.json",
-                        help="Path to config JSON")
-    parser.add_argument("--output", type=str, default="data/event_level/event_hh4b_qcd.h5",
-                        help="Output HDF5 path")
-    parser.add_argument("--n_max_particles", type=int, default=128,
-                        help="Max particles per event")
-    parser.add_argument("--skip_trigger", action="store_true",
-                        help="Skip trigger emulation (use all events)")
-    parser.add_argument("--max_signal_events", type=int, default=None,
-                        help="Cap on signal events")
-    parser.add_argument("--max_qcd_events_per_bin", type=int, default=None,
-                        help="Cap on QCD events per pT bin")
+    parser = argparse.ArgumentParser(
+        description="Generate event-level HH4b vs QCD dataset"
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="hh-bbbb-obj-config.json",
+        help="Path to config JSON",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="data/event_level/event_hh4b_qcd.npz",
+        help="Output .npz path",
+    )
+    parser.add_argument(
+        "--num_constituents", type=int, default=128, help="Max particles per event"
+    )
+    parser.add_argument(
+        "--skip_trigger",
+        action="store_true",
+        help="Skip trigger emulation (use all events)",
+    )
+    parser.add_argument(
+        "--max_signal_events", type=int, default=None, help="Cap on signal events"
+    )
+    parser.add_argument(
+        "--max_qcd_events_per_bin",
+        type=int,
+        default=None,
+        help="Cap on QCD events per pT bin",
+    )
     args = parser.parse_args()
 
     generate_event_dataset(
         config_path=args.config,
-        output_h5=args.output,
-        n_max_particles=args.n_max_particles,
+        output_npz=args.output,
+        num_constituents=args.num_constituents,
         skip_trigger=args.skip_trigger,
         max_signal_events=args.max_signal_events,
         max_qcd_events_per_bin=args.max_qcd_events_per_bin,
