@@ -37,8 +37,12 @@ def lumi_pb(luminosity_fb):
     return luminosity_fb * 1000.0
 
 
-def signal_weight(n_events, luminosity_fb=DEFAULT_LUMINOSITY_FB,
-                  signal_xsec_pb=DEFAULT_HH4B_XSEC_PB, n_gen_signal=None):
+def signal_weight(
+    n_events,
+    luminosity_fb=DEFAULT_LUMINOSITY_FB,
+    signal_xsec_pb=DEFAULT_HH4B_XSEC_PB,
+    n_gen_signal=None,
+):
     """Per-event signal weight array for expected yield at given luminosity.
 
     Parameters
@@ -82,7 +86,9 @@ def qcd_weight_per_event(sigma_bin_pb, n_gen_bin, luminosity_fb=DEFAULT_LUMINOSI
     return sigma_bin_pb * lumi_pb(luminosity_fb) / n_gen_bin
 
 
-def scale_qcd_weights_raw(raw_weights, sigma_to_ngen, luminosity_fb=DEFAULT_LUMINOSITY_FB):
+def scale_qcd_weights_raw(
+    raw_weights, sigma_to_ngen, luminosity_fb=DEFAULT_LUMINOSITY_FB
+):
     """Scale Convention-C QCD weights (raw sigma_bin per event) to expected yields.
 
     In Convention C (notebooks loading directly from ROOT), each event carries
@@ -112,6 +118,7 @@ def scale_qcd_weights_raw(raw_weights, sigma_to_ngen, luminosity_fb=DEFAULT_LUMI
     n_unmatched_nonunit = int(np.sum(~matched & ~np.isclose(raw_weights, 1.0)))
     if n_unmatched_nonunit > 0:
         import warnings
+
         warnings.warn(
             f"scale_qcd_weights_raw: {n_unmatched_nonunit} weights did not match any "
             "sigma_bin and are not 1.0 (signal). Check sigma_to_ngen dict.",

@@ -59,7 +59,7 @@ def plot_roc_grid(
         ax.set_xlabel("False Positive Rate")
         ax.set_ylabel("True Positive Rate")
         ax.set_title(f"{collection_label}: {var1_name} [{v1_lo}, {v1_hi})")
-        ax.legend(fontsize=7)
+        # ax.legend(fontsize=7)
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
 
@@ -101,11 +101,17 @@ def plot_2d_performance_heatmap(
     for i in range(auc_matrix.shape[0]):
         for j in range(auc_matrix.shape[1]):
             if np.isnan(auc_matrix[i, j]):
-                n_str = f"N={int(count_matrix[i, j])}" if count_matrix is not None else ""
+                n_str = (
+                    f"N={int(count_matrix[i, j])}" if count_matrix is not None else ""
+                )
                 annot[i, j] = f"{n_str}\n(N/A)" if n_str else "N/A"
             elif unc_matrix is not None and not np.isnan(unc_matrix[i, j]):
-                n_str = f"(N={int(count_matrix[i, j])})" if count_matrix is not None else ""
-                annot[i, j] = f"{auc_matrix[i, j]:.3f}+/-{unc_matrix[i, j]:.3f}\n{n_str}"
+                n_str = (
+                    f"(N={int(count_matrix[i, j])})" if count_matrix is not None else ""
+                )
+                annot[i, j] = (
+                    f"{auc_matrix[i, j]:.3f}+/-{unc_matrix[i, j]:.3f}\n{n_str}"
+                )
             elif count_matrix is not None:
                 annot[i, j] = f"{auc_matrix[i, j]:.3f}\n(N={int(count_matrix[i, j])})"
             else:
