@@ -165,6 +165,7 @@ def extract_event_features(puppi_cands, num_constituents=128):
     dxy = dxy[:n_real]
     z0 = z0[:n_real]
     pid = pid[:n_real]
+    puppi_weight = puppi_weight[:n_real]
 
     # Mass from particle type
     mass = np.array(
@@ -236,6 +237,7 @@ def generate_event_dataset(
     skip_trigger=True,
     max_signal_events=None,
     max_qcd_events_per_bin=None,
+    flatten_spectrum=True,
 ):
     """
     Full pipeline: load ROOT files → feature extraction
@@ -395,6 +397,7 @@ def generate_event_dataset(
         max_pt=2000.0,
         on_signal=True,
         sample_weights=qcd_w,
+        flatten_both=flatten_spectrum,
     )
 
     # ── Write .npz ───────────────────────────────────────────────────
@@ -418,6 +421,20 @@ def generate_event_dataset(
     print(f"Done. Dataset shape: x={X.shape}, y={y.shape}")
 
 
+def _str2bool(value):
+    """Robust bool parser for CLI args (e.g. --flag true/false)."""
+    if isinstance(value, bool):
+        return value
+    value = value.strip().lower()
+    if value in {"1", "true", "t", "yes", "y"}:
+        return True
+    if value in {"0", "false", "f", "no", "n"}:
+        return False
+    raise argparse.ArgumentTypeError(
+        "Expected a boolean value: true/false, yes/no, 1/0"
+    )
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Generate event-level HH4b vs QCD dataset"
@@ -439,7 +456,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--skip_trigger",
-        action="store_true",
+        type=_str2bool,
+        default=True,
         help="Skip trigger emulation (use all events)",
     )
     parser.add_argument(
@@ -451,6 +469,12 @@ if __name__ == "__main__":
         default=None,
         help="Cap on QCD events per pT bin",
     )
+    parser.add_argument(
+        "--flatten_spectrum",
+        type=_str2bool,
+        default=True,
+        help="Flatten the spectrum when computing kinematic weights",
+    )
     args = parser.parse_args()
 
     generate_event_dataset(
@@ -460,4 +484,5 @@ if __name__ == "__main__":
         skip_trigger=args.skip_trigger,
         max_signal_events=args.max_signal_events,
         max_qcd_events_per_bin=args.max_qcd_events_per_bin,
+        flatten_spectrum=args.flatten_spectrum,
     )
