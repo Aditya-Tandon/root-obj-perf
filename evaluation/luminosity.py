@@ -145,3 +145,60 @@ def scale_qcd_weights_per_event(stored_weights, luminosity_fb=DEFAULT_LUMINOSITY
     np.ndarray — luminosity-scaled per-event weights
     """
     return stored_weights * lumi_pb(luminosity_fb)
+
+
+def build_eval_weights(
+    qcd_weights_raw,
+    sigma_to_ngen,
+    n_signal,
+    mode="qcd_only",
+    luminosity_fb=DEFAULT_LUMINOSITY_FB,
+    signal_xsec_pb=DEFAULT_HH4B_XSEC_PB,
+    n_gen_signal=None,
+):
+    """Build a combined sample_weight array for ROC/AUC evaluation.
+
+    The returned array has length ``n_signal + len(qcd_weights_raw)`` and is
+    ordered [signal, QCD].  Three weighting modes are supported:
+
+    * ``"unweighted"`` — all weights 1.0.
+    * ``"qcd_only"``   — signal = 1.0, QCD = sigma_bin * L / N_gen
+      (correct within-QCD composition; HH b-jets keep equal emphasis).
+    * ``"full_physics"``— signal = sigma_HH * L / N_gen_signal,
+      QCD = sigma_bin * L / N_gen  (true expected yields).
+
+    Parameters
+    ----------
+    qcd_weights_raw : np.ndarray
+        Convention-C weights (raw sigma_bin) for QCD jets.
+    sigma_to_ngen : dict
+        Maps sigma_bin (float) -> n_gen (int) for each QCD pT bin.
+    n_signal : int
+        Number of signal jets.
+    mode : str
+        One of ``"unweighted"``, ``"qcd_only"``, ``"full_physics"``.
+    luminosity_fb : float
+    signal_xsec_pb : float
+    n_gen_signal : int or None
+        Total generated signal events.  Required for ``"full_physics"`` mode.
+
+    Returns
+    -------
+    np.ndarray of shape (n_signal + len(qcd_weights_raw),), float64
+    """
+    if mode == "unweighted":
+        return np.ones(n_signal + len(qcd_weights_raw), dtype=np.float64)
+
+    qcd_scaled = scale_qcd_weights_raw(qcd_weights_raw, sigma_to_ngen, luminosity_fb)
+
+    if mode == "qcd_only":
+        sig_w = np.ones(n_signal, dtype=np.float64)
+    elif mode == "full_physics":
+        sig_w = signal_weight(n_signal, luminosity_fb, signal_xsec_pb, n_gen_signal)
+    else:
+        raise ValueError(
+            f"Unknown eval weight mode {mode!r}. "
+            "Choose from 'unweighted', 'qcd_only', 'full_physics'."
+        )
+
+    return np.concatenate([sig_w, qcd_scaled])
