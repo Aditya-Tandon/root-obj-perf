@@ -1,0 +1,49 @@
+{
+    "exp_name": "EventParT_HH4b_binary",
+    "input_dim": 17,
+    "model": {
+        "embed_dim": 128,
+        "num_pairwise_feat": 7,
+        "num_heads": 8,
+        "num_layers": 8,
+        "num_cls_layers": 3,
+        "num_reg_layers": 3,
+        "dropout": 0.3,
+        "num_classes": 1,
+        "use_batch_norm": true,
+        "pt_regression": false,
+        "quantile_regression": false,
+        "quantiles": [0.16, 0.84]
+    },
+    "training": {
+        "restart": false,
+        "wandb_run_path": null,
+        "epochs": 300,
+        "batch_size": 512,
+        "pos_weight": 1.0,
+        "log_freq": 20,
+        "last_epoch_in_prev_run": 0,
+        "use_amp": false,
+        "data": {
+            "data_path": "data/event_level/l1_puppi_128_flat_npy/",
+            "val_split": 0.2,
+            "num_workers": 4
+        },
+        "optimiser": {
+            "lr": 1e-3,
+            "weight_decay": 1e-4
+        },
+        "scheduler": {
+            "warmup_epochs": 5,
+            "total_epochs": 300,
+            "min_lr": 1e-6,
+            "red_fac": 0.5
+        }
+    },
+    "wandb": {
+        "project": "EventParT-HH4b",
+        "entity": "adityatandon29",
+        "artifact_name": "best_model",
+        "ckpt_type": "latest"
+    }
+}
