@@ -13,6 +13,7 @@ from wandb_utils import extract_wandb_run_id, get_model_ckpt
 
 from data_pipeline.combined_loader import CombinedJetDataLoader
 from model.warmup_cosine_lr import WarmupCosineSchedulerWithRestarts
+from evaluation.luminosity import build_eval_weights
 
 torch.manual_seed(42)
 np.random.seed(42)
@@ -108,6 +109,20 @@ def run_training(cfg):
     print(
         f"Data loaders prepared with {len(train_loader.dataset)} training samples and {len(val_loader.dataset)} validation samples."
     )
+
+    # 3b. Load physics config for evaluation weights (sigma_to_ngen mapping)
+    physics_cfg_path = cfg["training"].get("physics_config", "hh-bbbb-obj-config.json")
+    with open(physics_cfg_path) as f:
+        phys_cfg = json.load(f)
+    sigma_to_ngen = {
+        b["weight"]: b["n_gen"] for b in phys_cfg["QCD_background"].values()
+    }
+    eval_weight_mode = cfg["training"].get("eval_weight_mode", "qcd_only")
+    phys = phys_cfg.get("physics", {})
+    luminosity_fb = phys.get("luminosity_fb", 1000.0)
+    signal_xsec_pb = phys.get("signal_xsec_pb", 0.0113)
+    n_gen_signal = phys.get("n_gen_signal")
+    print(f"Eval weight mode: {eval_weight_mode} (physics config: {physics_cfg_path})")
 
     # 4. Initialize Particle Transformer
     pt_regression = cfg["model"].get("pt_regression", False)
@@ -269,6 +284,22 @@ def run_training(cfg):
         scheduler.step()
 
         # --- Train metrics ---
+        all_train_labels = np.concatenate(train_labels)
+        all_train_outputs = np.concatenate(train_outputs)
+        all_train_qcd_w = np.concatenate(train_qcd_weights)
+        n_train_sig = int((all_train_labels.ravel() == 1).sum())
+        train_eval_w = build_eval_weights(
+            all_train_qcd_w[all_train_labels.ravel() == 0],
+            sigma_to_ngen, n_train_sig, mode=eval_weight_mode,
+            luminosity_fb=_luminosity_fb, signal_xsec_pb=_signal_xsec_pb,
+            n_gen_signal=_n_gen_signal,
+        )
+        # build_eval_weights returns [signal, QCD] order — reorder to match
+        # the original label order (interleaved signal & QCD from DataLoader)
+        train_w_out = np.empty(len(all_train_labels), dtype=np.float64)
+        sig_mask_tr = all_train_labels.ravel() == 1
+        train_w_out[sig_mask_tr] = train_eval_w[:n_train_sig]
+        train_w_out[~sig_mask_tr] = train_eval_w[n_train_sig:]
         train_metrics = {
             "train_loss": (
                 train_cls_loss_sum + REG_SCALE_FAC * train_reg_loss_sum + QREG_SCALE_FAC * train_quant_loss_sum
@@ -276,7 +307,7 @@ def run_training(cfg):
             / n_train_batches,
             "train_cls_loss": train_cls_loss_sum / n_train_batches,
             "train_auc": roc_auc_score(
-                np.concatenate(train_labels), np.concatenate(train_outputs), sample_weight=np.concatenate(train_qcd_weights)
+                all_train_labels, all_train_outputs, sample_weight=train_w_out
             ),
         }
         if pt_regression:
@@ -343,13 +374,27 @@ def run_training(cfg):
                 all_labels.append(y_batch.cpu().numpy())
                 all_qcd_weights.append(qcd_weights.detach().cpu().numpy())
         # --- Val metrics ---
+        all_val_labels = np.concatenate(all_labels)
+        all_val_preds = np.concatenate(all_preds)
+        all_val_qcd_w = np.concatenate(all_qcd_weights)
+        n_val_sig = int((all_val_labels.ravel() == 1).sum())
+        val_eval_w = build_eval_weights(
+            all_val_qcd_w[all_val_labels.ravel() == 0],
+            sigma_to_ngen, n_val_sig, mode=eval_weight_mode,
+            luminosity_fb=_luminosity_fb, signal_xsec_pb=_signal_xsec_pb,
+            n_gen_signal=_n_gen_signal,
+        )
+        val_w_out = np.empty(len(all_val_labels), dtype=np.float64)
+        sig_mask_val = all_val_labels.ravel() == 1
+        val_w_out[sig_mask_val] = val_eval_w[:n_val_sig]
+        val_w_out[~sig_mask_val] = val_eval_w[n_val_sig:]
         val_metrics = {
             "val_loss": (val_cls_loss_sum + REG_SCALE_FAC * val_reg_loss_sum + QREG_SCALE_FAC * val_quant_loss_sum)
             / n_val_batches,
             "val_cls_loss": val_cls_loss_sum / n_val_batches,
             "val_quant_loss": val_quant_loss_sum / n_val_batches,
             "val_auc": roc_auc_score(
-                np.concatenate(all_labels), np.concatenate(all_preds), sample_weight=np.concatenate(all_qcd_weights)
+                all_val_labels, all_val_preds, sample_weight=val_w_out
             ),
         }
         if pt_regression:
