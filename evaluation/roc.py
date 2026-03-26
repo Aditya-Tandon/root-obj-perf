@@ -7,19 +7,37 @@ import numpy as np
 from sklearn.metrics import roc_curve, auc, roc_auc_score, precision_recall_curve, average_precision_score
 
 
-def roc_from_scores(sig_scores, bkg_scores, bkg_weights=None):
+def roc_from_scores(sig_scores, bkg_scores, sig_weights=None, bkg_weights=None):
     """Compute (fpr, tpr, auc, thresholds) from separate signal and background score arrays.
 
-    If bkg_weights is provided, background samples are weighted (e.g. QCD xsec weights).
+    Parameters
+    ----------
+    sig_scores : array-like
+        Signal-class scores.
+    bkg_scores : array-like
+        Background-class scores.
+    sig_weights : array-like, optional
+        Per-sample weights for the signal class.
+    bkg_weights : array-like, optional
+        Per-sample weights for the background class.
     """
     if len(sig_scores) == 0 or len(bkg_scores) == 0:
         return np.array([0, 1]), np.array([0, 0]), 0.5, np.array([1.0])
     y_true = np.concatenate([np.ones(len(sig_scores)), np.zeros(len(bkg_scores))])
     y_scores = np.concatenate([sig_scores, bkg_scores])
-    if bkg_weights is not None:
-        sample_weight = np.concatenate([np.ones(len(sig_scores)), bkg_weights])
+
+    if sig_weights is not None and len(sig_weights) != len(sig_scores):
+        raise ValueError("sig_weights must have same length as sig_scores")
+    if bkg_weights is not None and len(bkg_weights) != len(bkg_scores):
+        raise ValueError("bkg_weights must have same length as bkg_scores")
+
+    if sig_weights is not None or bkg_weights is not None:
+        sig_w = sig_weights if sig_weights is not None else np.ones(len(sig_scores))
+        bkg_w = bkg_weights if bkg_weights is not None else np.ones(len(bkg_scores))
+        sample_weight = np.concatenate([sig_w, bkg_w])
     else:
         sample_weight = None
+
     fpr, tpr, thresholds = roc_curve(y_true, y_scores, sample_weight=sample_weight)
     auc_score = auc(fpr, tpr)
     return fpr, tpr, auc_score, thresholds
