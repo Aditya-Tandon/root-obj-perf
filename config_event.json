@@ -16,6 +16,11 @@
         "quantiles": [0.16, 0.84]
     },
     "training": {
+        "distributed": {
+            "enabled": false,
+            "backend": "nccl",
+            "find_unused_parameters": false
+        },
         "restart": false,
         "wandb_run_path": null,
         "epochs": 300,

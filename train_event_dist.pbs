@@ -1,0 +1,25 @@
+#!/bin/bash
+#PBS -l select=1:ncpus=32:mem=200gb:ngpus=2
+#PBS -l walltime=00:30:00
+
+cd $PBS_O_WORKDIR
+
+eval "$(~/miniforge3/bin/conda shell.bash hook)"
+
+conda activate hep-root-ml
+
+NPROC_PER_NODE=2
+export OMP_NUM_THREADS=$((32 / NPROC_PER_NODE))
+export NCCL_DEBUG=WARN
+
+echo "Starting DDP training with $NPROC_PER_NODE GPUs."
+torchrun \
+    --standalone \
+    --nnodes=1 \
+    --nproc_per_node=$NPROC_PER_NODE \
+    train_event.py \
+    --config config_event.json \
+    --set training.pos_weight=10.0 \
+    --set training.batch_size=512
+
+echo "Training complete."
