@@ -179,7 +179,7 @@ def run_training(cfg):
 
     # SyncBatchNorm for DDP (synchronises BN stats across GPUs)
     if distributed and cfg["model"].get("use_batch_norm", True):
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorms(model)
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
     model.to(device)
     if is_main(rank):
