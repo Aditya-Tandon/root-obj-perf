@@ -18,8 +18,8 @@ from evaluation.luminosity import build_eval_weights
 torch.manual_seed(42)
 np.random.seed(42)
 
-REG_SCALE_FAC = 0.5
-QREG_SCALE_FAC = 0.5
+REG_SCALE_FAC = 1.0
+QREG_SCALE_FAC = 1.0
 VAL_EVERY_N_EPOCHS = 10
 torch.backends.cuda.matmul.allow_tf32 = True
 print("TF32 matmul enabled for faster training on compatible GPUs.")
@@ -127,6 +127,10 @@ def run_training(cfg):
     # 4. Initialize Particle Transformer
     pt_regression = cfg["model"].get("pt_regression", False)
     quantile_regression = cfg["model"].get("quantile_regression", False)
+
+    QREG_SCALE_FAC = cfg["training"].get("qreg_loss_scale", 1.0) 
+    REG_SCALE_FAC = cfg["training"].get("pt_reg_loss_scale", 1.0) 
+    print(f"Using regression loss scale factors - PT: {REG_SCALE_FAC}, Quantile: {QREG_SCALE_FAC}")
 
     model = ParticleTransformer(
         input_dim=cfg["input_dim"],
@@ -291,8 +295,8 @@ def run_training(cfg):
         train_eval_w = build_eval_weights(
             all_train_qcd_w[all_train_labels.ravel() == 0],
             sigma_to_ngen, n_train_sig, mode=eval_weight_mode,
-            luminosity_fb=_luminosity_fb, signal_xsec_pb=_signal_xsec_pb,
-            n_gen_signal=_n_gen_signal,
+            luminosity_fb=luminosity_fb, signal_xsec_pb=signal_xsec_pb,
+            n_gen_signal=n_gen_signal,
         )
         # build_eval_weights returns [signal, QCD] order — reorder to match
         # the original label order (interleaved signal & QCD from DataLoader)
@@ -381,8 +385,8 @@ def run_training(cfg):
         val_eval_w = build_eval_weights(
             all_val_qcd_w[all_val_labels.ravel() == 0],
             sigma_to_ngen, n_val_sig, mode=eval_weight_mode,
-            luminosity_fb=_luminosity_fb, signal_xsec_pb=_signal_xsec_pb,
-            n_gen_signal=_n_gen_signal,
+            luminosity_fb=luminosity_fb, signal_xsec_pb=signal_xsec_pb,
+            n_gen_signal=n_gen_signal,
         )
         val_w_out = np.empty(len(all_val_labels), dtype=np.float64)
         sig_mask_val = all_val_labels.ravel() == 1
