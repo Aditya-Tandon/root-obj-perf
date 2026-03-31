@@ -60,15 +60,15 @@ def plot_mass_1d(
         (axes[1], sig_sub_mass, qcd_sub_mass, bins_h, r"Subleading $m_H$ [GeV]", "Subleading Higgs"),
         (axes[2], sig_hh_mass, qcd_hh_mass, bins_hh, r"$m_{HH}$ [GeV]", r"$m_{HH}$"),
     ]:
-        hist_kw = dict(density=True) if density else {}
+        hist_kw = {"density": density}
         if sig_m is not None and len(sig_m) > 0:
-            sw = None if density else sig_weights
+            sw = sig_weights
             ax.hist(sig_m, bins=bins, histtype="stepfilled", alpha=0.3, color=color,
                     label=f"Signal ({len(sig_m)})", weights=sw, **hist_kw)
             ax.hist(sig_m, bins=bins, histtype="step", linewidth=2, color=color,
                     weights=sw, **hist_kw)
         if qcd_m is not None and len(qcd_m) > 0:
-            qw = None if density else qcd_weights
+            qw = qcd_weights
             ax.hist(qcd_m, bins=bins, histtype="step", linewidth=2, color="grey",
                     linestyle="--", label=f"QCD ({len(qcd_m)})", weights=qw, **hist_kw)
         if bins is bins_h:
@@ -120,8 +120,10 @@ def plot_mass_2d(
 
     for ax, (cat, lm, sm, w) in zip(axes, panels):
         if len(lm) > 0:
+            lm_np = np.asarray(lm)
+            sm_np = np.asarray(sm)
             hist_kw = dict(weights=w) if w is not None else {}
-            h = ax.hist2d(lm, sm, bins=[bins_2d, bins_2d], cmap="viridis", **hist_kw)
+            h = ax.hist2d(lm_np, sm_np, bins=[bins_2d, bins_2d], cmap="viridis", **hist_kw)
             fig.colorbar(h[3], ax=ax, label="Events")
         c1, c2 = mh_centers
         ax.axvline(c1, color="red", linestyle="--", linewidth=1.5, label=f"$m_H$ = {c1} GeV")
@@ -138,7 +140,17 @@ def plot_mass_2d(
         )
         ax.set_xlabel("Leading Higgs Mass [GeV]")
         ax.set_ylabel("Subleading Higgs Mass [GeV]")
-        ax.set_title(f"{label} — {cat}")
+        if len(lm) > 0:
+            r_hh = np.sqrt((lm_np - c1) ** 2 + (sm_np - c2) ** 2)
+            n_in = int(np.sum(r_hh < r_hh_cut))
+            n_tot = int(len(lm_np))
+            n_out = n_tot - n_in
+            ax.set_title(
+                f"{label} — {cat}\n"
+                f"(SR in/out: {n_in}/{n_out}, total: {n_tot})"
+            )
+        else:
+            ax.set_title(f"{label} — {cat}")
         ax.legend(loc="upper right", fontsize=10)
 
     fig.suptitle(f"2D $m_{{H1}}$ vs $m_{{H2}}$ — {label}", fontsize=16, y=1.02)
