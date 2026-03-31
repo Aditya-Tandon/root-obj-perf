@@ -108,6 +108,7 @@ def scale_qcd_weights_raw(
     np.ndarray — luminosity-scaled per-event weights
     """
     L = lumi_pb(luminosity_fb)
+    raw_weights = np.asarray(raw_weights).ravel()
     # Default: keep original value (signal jets have weight=1.0 and won't match any sigma bin)
     scaled = raw_weights.astype(np.float64)
     matched = np.zeros(len(raw_weights), dtype=bool)
