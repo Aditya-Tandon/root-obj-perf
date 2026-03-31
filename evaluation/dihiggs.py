@@ -6,6 +6,12 @@ Supports both rectangular (m_HH window) and circular (R_HH radius) signal region
 import numpy as np
 import awkward as ak
 
+try:
+    import vector
+    ak.behavior.update(vector.backends.awkward.behavior)
+except Exception:
+    pass
+
 
 def pair_from_4jets(js4):
     """D_HH minimisation on 4-jet events.
@@ -186,6 +192,7 @@ def compute_significance_at_luminosity(
     n_gen_signal=None,
     luminosity_fb=1000.0,
     signal_xsec_pb=0.0113,
+    convention="c",
     **kwargs,
 ):
     """Compute significance with proper luminosity scaling.
@@ -209,6 +216,12 @@ def compute_significance_at_luminosity(
         Target integrated luminosity in fb^-1.
     signal_xsec_pb : float
         Signal cross-section in pb.
+    convention: str
+        Weighting convention for bkg_raw_weights. 
+        "a" = per-bin weights (not implemented yet).
+        "b" = per-event weights stored without luminosity scaling. Use with event-level classifiers. 
+        "c" = only cross-section are stored. Need to convert to per-event weights using sigma_to_ngen and luminosity.
+            Use with legacy b-tagging datasets currently used for all models in this repo.
     **kwargs
         Passed to ``compute_significance`` (region, rect_window, r_hh_cut, mh_centers).
 
@@ -216,18 +229,233 @@ def compute_significance_at_luminosity(
     -------
     dict — same as ``compute_significance``
     """
-    from evaluation.luminosity import signal_weight, scale_qcd_weights_raw
+    from evaluation.luminosity import signal_weight, scale_qcd_weights_raw, scale_qcd_weights_per_event
 
-    sig_w = signal_weight(
-        len(sig_mh1), luminosity_fb, signal_xsec_pb, n_gen_signal,
-    )
-    bkg_w = scale_qcd_weights_raw(
-        np.asarray(bkg_raw_weights, dtype=np.float64), sigma_to_ngen, luminosity_fb,
-    )
+    if convention == "c":
+        sig_w = signal_weight(
+            len(sig_mh1), luminosity_fb, signal_xsec_pb, n_gen_signal,
+        )
+        bkg_w = scale_qcd_weights_raw(
+            np.asarray(bkg_raw_weights, dtype=np.float64), sigma_to_ngen, luminosity_fb,
+        )
+    elif convention == "a":
+        raise NotImplementedError("Convention A (per-bin weights) not implemented yet.")
+    elif convention == "b":
+        sig_w = signal_weight(
+            len(sig_mh1), luminosity_fb, signal_xsec_pb, n_gen_signal,
+        )
+        bkg_w = scale_qcd_weights_per_event(np.asarray(bkg_raw_weights, dtype=np.float64), luminosity_fb)
     return compute_significance(
         sig_mh1, sig_mh2, bkg_mh1, bkg_mh2,
         sig_weights=sig_w, bkg_weights=bkg_w, **kwargs,
     )
+
+
+def cluster_event_constituents(
+    constituent_features,
+    constituent_mask=None,
+    jet_R=0.4,
+    min_jet_pt=25.0,
+    min_constituent_pt=1e-3,
+):
+    """Cluster one event into anti-kt jets from constituent-level 4-vector features.
+
+    Parameters
+    ----------
+    constituent_features : array-like, shape (n_constituents, n_features)
+        Per-constituent features. Columns 0..3 must be [mass, pt, eta, phi].
+    constituent_mask : array-like[bool], optional
+        Valid-constituent mask. If None, constituents with pt > min_constituent_pt are used.
+    jet_R : float
+        Anti-kt distance parameter.
+    min_jet_pt : float
+        Minimum jet pT for ``inclusive_jets``.
+    min_constituent_pt : float
+        Minimum constituent pT used when building pseudojets.
+
+    Returns
+    -------
+    dict
+        Keys: pt, eta, phi, mass (numpy arrays), sorted by descending jet pT.
+    """
+    try:
+        import fastjet
+    except Exception as exc:
+        raise ImportError(
+            "fastjet is required for constituent-level jet clustering"
+        ) from exc
+
+    feats = np.asarray(constituent_features)
+    if feats.ndim != 2 or feats.shape[1] < 4:
+        raise ValueError(
+            "constituent_features must have shape (n_constituents, n_features>=4)"
+        )
+
+    if constituent_mask is None:
+        valid = feats[:, 1] > min_constituent_pt
+    else:
+        mask = np.asarray(constituent_mask).astype(bool)
+        if mask.ndim != 1 or mask.shape[0] != feats.shape[0]:
+            raise ValueError(
+                "constituent_mask must be 1D with same length as constituent_features"
+            )
+        valid = mask & (feats[:, 1] > min_constituent_pt)
+
+    valid_feats = feats[valid]
+    if valid_feats.shape[0] == 0:
+        return {
+            "pt": np.array([], dtype=np.float64),
+            "eta": np.array([], dtype=np.float64),
+            "phi": np.array([], dtype=np.float64),
+            "mass": np.array([], dtype=np.float64),
+        }
+
+    masses = valid_feats[:, 0].astype(np.float64)
+    pts = valid_feats[:, 1].astype(np.float64)
+    etas = valid_feats[:, 2].astype(np.float64)
+    phis = valid_feats[:, 3].astype(np.float64)
+
+    px = pts * np.cos(phis)
+    py = pts * np.sin(phis)
+    pz = pts * np.sinh(etas)
+    energies = np.sqrt((pts * np.cosh(etas)) ** 2 + np.maximum(masses, 0.0) ** 2)
+
+    pseudojets = []
+    for idx, (px_i, py_i, pz_i, e_i) in enumerate(zip(px, py, pz, energies)):
+        pj = fastjet.PseudoJet(float(px_i), float(py_i), float(pz_i), float(e_i))
+        pj.set_user_index(int(idx))
+        pseudojets.append(pj)
+
+    jet_def = fastjet.JetDefinition(fastjet.antikt_algorithm, float(jet_R))
+    cluster = fastjet.ClusterSequence(pseudojets, jet_def)
+    jets = fastjet.sorted_by_pt(cluster.inclusive_jets(float(min_jet_pt)))
+
+    return {
+        "pt": np.asarray([j.pt() for j in jets], dtype=np.float64),
+        "eta": np.asarray([j.eta() for j in jets], dtype=np.float64),
+        "phi": np.asarray([j.phi() for j in jets], dtype=np.float64),
+        "mass": np.asarray([j.m() for j in jets], dtype=np.float64),
+    }
+
+
+def reconstruct_dihiggs_from_constituents(
+    constituents,
+    masks=None,
+    top_k=4,
+    jet_R=0.4,
+    min_jet_pt=25.0,
+    min_constituent_pt=1e-3,
+):
+    """Reconstruct di-Higgs masses from event-level constituent tensors.
+
+    Each event is clustered to jets with anti-kt, jets are sorted by pT,
+    the top ``top_k`` jets are retained, and HH candidates are built with
+    ``pair_from_4jets``.
+
+    Parameters
+    ----------
+    constituents : array-like, shape (n_events, n_constituents, n_features)
+        Event-level constituent feature tensor, first 4 columns [mass, pt, eta, phi].
+    masks : array-like[bool], optional, shape (n_events, n_constituents)
+        Valid-constituent mask.
+    top_k : int
+        Number of leading jets to use for HH reconstruction (default: 4).
+    jet_R : float
+        Anti-kt distance parameter.
+    min_jet_pt : float
+        Minimum jet pT for inclusive jet selection.
+    min_constituent_pt : float
+        Minimum constituent pT entering clustering.
+
+    Returns
+    -------
+    dict
+        Keys: event_indices, selected_mask, n_jets_per_event, lead_m, sub_m, hh_m.
+    """
+    arr = np.asarray(constituents)
+    if arr.ndim != 3 or arr.shape[2] < 4:
+        raise ValueError(
+            "constituents must have shape (n_events, n_constituents, n_features>=4)"
+        )
+
+    if masks is not None:
+        mask_arr = np.asarray(masks).astype(bool)
+        if mask_arr.shape[:2] != arr.shape[:2]:
+            raise ValueError(
+                "masks must have shape (n_events, n_constituents) matching constituents"
+            )
+    else:
+        mask_arr = None
+
+    top_pts, top_etas, top_phis, top_masses = [], [], [], []
+    selected_indices = []
+    n_jets_per_event = np.zeros(arr.shape[0], dtype=np.int32)
+
+    for i_evt in range(arr.shape[0]):
+        evt_mask = mask_arr[i_evt] if mask_arr is not None else None
+        jets = cluster_event_constituents(
+            arr[i_evt],
+            constituent_mask=evt_mask,
+            jet_R=jet_R,
+            min_jet_pt=min_jet_pt,
+            min_constituent_pt=min_constituent_pt,
+        )
+        n_jets = int(len(jets["pt"]))
+        n_jets_per_event[i_evt] = n_jets
+        if n_jets < top_k:
+            continue
+
+        selected_indices.append(i_evt)
+        top_pts.append(jets["pt"][:top_k])
+        top_etas.append(jets["eta"][:top_k])
+        top_phis.append(jets["phi"][:top_k])
+        top_masses.append(jets["mass"][:top_k])
+
+    selected_mask = np.zeros(arr.shape[0], dtype=bool)
+    if len(selected_indices) > 0:
+        selected_mask[np.asarray(selected_indices, dtype=np.int32)] = True
+
+    if len(selected_indices) == 0:
+        return {
+            "event_indices": np.array([], dtype=np.int32),
+            "selected_mask": selected_mask,
+            "n_jets_per_event": n_jets_per_event,
+            "lead_m": np.array([], dtype=np.float64),
+            "sub_m": np.array([], dtype=np.float64),
+            "hh_m": np.array([], dtype=np.float64),
+        }
+
+    js4 = ak.zip(
+        {
+            "pt": ak.Array(top_pts),
+            "eta": ak.Array(top_etas),
+            "phi": ak.Array(top_phis),
+            "mass": ak.Array(top_masses),
+        }
+    )
+    js4 = ak.with_field(
+        js4,
+        ak.zip(
+            {
+                "pt": js4.pt,
+                "eta": js4.eta,
+                "phi": js4.phi,
+                "mass": js4.mass,
+            },
+            with_name="Momentum4D",
+        ),
+        "vector",
+    )
+
+    lead, sub, hh = pair_from_4jets(js4)
+    return {
+        "event_indices": np.asarray(selected_indices, dtype=np.int32),
+        "selected_mask": selected_mask,
+        "n_jets_per_event": n_jets_per_event,
+        "lead_m": ak.to_numpy(lead.mass),
+        "sub_m": ak.to_numpy(sub.mass),
+        "hh_m": ak.to_numpy(hh.mass),
+    }
 
 
 def reconstruct_dihiggs(
