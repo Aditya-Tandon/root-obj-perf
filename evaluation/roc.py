@@ -48,6 +48,20 @@ def get_roc_point_at_mistag(mistag, eff, thresh, target_mistag):
     return [(m, e, th) for m, e, th in zip(mistag, eff, thresh) if m >= target_mistag][0]
 
 
+def get_roc_point_at_efficiency(mistag, eff, thresh, target_eff):
+    """Find the first (FPR, TPR, threshold) tuple where TPR >= target_eff."""
+    return [(m, e, th) for m, e, th in zip(mistag, eff, thresh) if e >= target_eff][0]
+
+
+def get_mistag_at_fixed_efficiency(fpr, tpr, target_eff=0.7):
+    """Interpolate mistag rate (FPR) at a target signal efficiency (TPR)."""
+    if not np.all(np.diff(tpr) >= 0):
+        sorted_indices = np.argsort(tpr)
+        tpr = tpr[sorted_indices]
+        fpr = fpr[sorted_indices]
+    return np.interp(target_eff, tpr, fpr)
+
+
 def get_working_points(name, roc_data, targets=None):
     """Print and return threshold values at Tight/Medium/Loose working points.
 
