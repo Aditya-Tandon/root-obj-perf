@@ -598,7 +598,7 @@ def process_batch(
             events, config, collection_key, dist_param=cluster_dist_param
         )
         n_clustered_jets = ak.sum(ak.num(clustered_jets, axis=1))
-        print(f"  Clustered jets (pT > 25 GeV, |eta| < 2.4): {n_clustered_jets}")
+        print(f"  Clustered jets (|eta| < 2.4): {n_clustered_jets}")
 
         # Sort jets by pT (descending)
         sorted_indices = ak.argsort(clustered_jets.pt, axis=1, ascending=False)
