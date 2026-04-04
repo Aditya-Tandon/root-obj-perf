@@ -35,6 +35,7 @@ from evaluation.jet_matching import get_purity_mask_cross_matched
 # Each entry: (label, collection_name, tagger_field, extra_fields_to_cache)
 TAGGER_REGISTRY = {
     "offline": ("Offline_PNet", "Jet", "btagPNetB", []),
+    "upart": ("Offline_UPart", "Jet", "btagUParTAK4B", []),
     "l1ng": ("L1NG", "L1puppiJetSC4NG", "b_v_udscg_score", []),
     "l1ext": ("L1Ext", "L1puppiExtJetSC4", "btagScore", []),
 }
@@ -51,6 +52,7 @@ def _flatten(arr):
 
 
 # ── Signal processing ────────────────────────────────────────────────────────
+
 
 def process_signal(config, tagger_defs, eta_cut):
     """Load signal ntuples, gen-match, and extract reference tagger scores.
@@ -86,9 +88,7 @@ def process_signal(config, tagger_defs, eta_cut):
         eta_ok = _eta_mask(jets, eta_cut)
         jets_cut = jets[eta_ok]
 
-        matched_mask = get_purity_mask_cross_matched(
-            gen_b, jets_cut, CONFIG=config
-        )
+        matched_mask = get_purity_mask_cross_matched(gen_b, jets_cut, CONFIG=config)
 
         scores = _flatten(getattr(jets_cut, tagger_field)[matched_mask])
         pt = _flatten(jets_cut.pt[matched_mask])
@@ -107,6 +107,7 @@ def process_signal(config, tagger_defs, eta_cut):
 
 
 # ── QCD processing ───────────────────────────────────────────────────────────
+
 
 def process_qcd(config, tagger_defs, eta_cut):
     """Load QCD pT-binned ntuples, gen-match, and extract tagger scores.
@@ -155,9 +156,7 @@ def process_qcd(config, tagger_defs, eta_cut):
             eta_ok = _eta_mask(jets, eta_cut)
             jets_cut = jets[eta_ok]
 
-            matched_mask = get_purity_mask_cross_matched(
-                gen_b, jets_cut, CONFIG=config
-            )
+            matched_mask = get_purity_mask_cross_matched(gen_b, jets_cut, CONFIG=config)
 
             flat_scores = _flatten(getattr(jets_cut, tagger_field))
             flat_labels = _flatten(ak.values_astype(matched_mask, np.float32))
@@ -206,6 +205,7 @@ def process_qcd(config, tagger_defs, eta_cut):
 
 # ── Save ─────────────────────────────────────────────────────────────────────
 
+
 def save_cache(sig_data, qcd_data, config, output_path):
     """Save cache to .npz (or .h5 if >5 GB)."""
     output = {}
@@ -247,25 +247,32 @@ def save_cache(sig_data, qcd_data, config, output_path):
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Cache reference tagger scores with gen-matched labels."
     )
     parser.add_argument(
-        "--config", default="hh-bbbb-obj-config.json",
+        "--config",
+        default="hh-bbbb-obj-config.json",
         help="Path to physics/object config JSON",
     )
     parser.add_argument(
-        "--output", default="data/reference_tagger_cache.npz",
+        "--output",
+        default="data/reference_tagger_cache.npz",
         help="Output cache file path (.npz)",
     )
     parser.add_argument(
-        "--collections", nargs="+", default=["offline", "l1ng", "l1ext"],
+        "--collections",
+        nargs="+",
+        default=["offline", "l1ng", "l1ext"],
         choices=list(TAGGER_REGISTRY.keys()),
         help="Which reference tagger collections to cache",
     )
     parser.add_argument(
-        "--eta-cut", type=float, default=2.4,
+        "--eta-cut",
+        type=float,
+        default=2.4,
         help="Eta cut (no pT cut applied — vary pT at evaluation time)",
     )
     args = parser.parse_args()

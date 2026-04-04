@@ -32,16 +32,18 @@ from sklearn.calibration import calibration_curve
 from torch.utils.data import DataLoader
 from scipy.optimize import curve_fit as _curve_fit
 
-from parT import ParticleTransformer, to_rapidity
-import train_part_data
-from train_part_data import CombinedJetDataLoader, L1JetDataset, stratified_split
-from data_loading_helpers import (
+from model.parT import ParticleTransformer, to_rapidity
+import data_pipeline.datasets as train_part_data
+from data_pipeline.combined_loader import CombinedJetDataLoader
+from data_pipeline.datasets import L1JetDataset
+from data_pipeline.splitting import stratified_split
+from data_pipeline.root_loading import (
     apply_custom_cuts,
     load_and_prepare_data,
     select_gen_b_quarks_from_higgs,
 )
-from analysis_helpers import get_purity_mask_cross_matched, calculate_roc_points
-from plotting_helpers import plot_roc_comparison
+from evaluation.jet_matching import get_purity_mask_cross_matched, calculate_roc_points
+from plotting.base import plot_roc_comparison
 
 plt.rcParams.update(
     {
@@ -774,8 +776,8 @@ def plot_evolution(config_part_path, btag_threshold=None):
         stem,
     ):
         """Run di-Higgs mass reconstruction and plot signal vs QCD."""
-        from make_dataset import cluster_candidates
-        from data_loading_helpers import one_hot_encode_l1_puppi
+        from data_pipeline.make_particle_dataset import cluster_candidates
+        from data_pipeline.root_loading import one_hot_encode_l1_puppi
 
         cfg = cuts_cfg
         # Determine collection

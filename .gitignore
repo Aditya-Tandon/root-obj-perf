@@ -6,3 +6,6 @@ wandb/
 Updates*
 *.md
 .DS_Store
+conf/
+*hydra*
+*.log

@@ -40,6 +40,11 @@ def generate_physical_data(batch_size, num_particles):
     return x
 
 
+def classification_tensor(output):
+    """Compatibility helper for models returning dict outputs."""
+    return output["classification"] if isinstance(output, dict) else output
+
+
 class TestPhysicsUtilityFunctions(unittest.TestCase):
     """Test physics utility functions for converting [mass, pt, eta, phi] to rapidity, energy, and pt."""
 
@@ -142,7 +147,7 @@ class TestPairwiseEmbedding(unittest.TestCase):
         """Test that forward pass produces correct output shape."""
         x = generate_physical_data(self.batch_size, self.num_particles)
 
-        output = self.model(x)
+        output = classification_tensor(self.model(x))
 
         expected_shape = (
             self.batch_size,
@@ -160,7 +165,7 @@ class TestPairwiseEmbedding(unittest.TestCase):
         mask = torch.zeros(self.batch_size, self.num_particles, dtype=torch.bool)
         mask[:, :4] = True
 
-        output = self.model(x, particle_mask=mask)
+        output = classification_tensor(self.model(x, particle_mask=mask))
 
         # The mask zeros out the input features before passing through the network.
         # Since the network has biases, masked regions will have identical values
@@ -331,7 +336,7 @@ class TestParticleTransformer(unittest.TestCase):
         """Test that forward pass produces correct output shape."""
         x = generate_physical_data(self.batch_size, self.num_particles)
 
-        output = self.model(x)
+        output = classification_tensor(self.model(x))
 
         expected_shape = (self.batch_size, self.num_classes)
         self.assertEqual(output.shape, expected_shape)
@@ -343,7 +348,7 @@ class TestParticleTransformer(unittest.TestCase):
         mask = torch.ones(self.batch_size, self.num_particles, dtype=torch.bool)
         mask[:, 8:] = False
 
-        output = self.model(x, particle_mask=mask)
+        output = classification_tensor(self.model(x, particle_mask=mask))
 
         self.assertEqual(output.shape, (self.batch_size, self.num_classes))
 
@@ -360,7 +365,7 @@ class TestParticleTransformer(unittest.TestCase):
 
         x = torch.stack([mass, pt, eta, phi, dxy, z0, q], dim=-1).requires_grad_(True)
 
-        output = self.model(x)
+        output = classification_tensor(self.model(x))
         loss = output.sum()
         loss.backward()
 
@@ -379,7 +384,7 @@ class TestParticleTransformer(unittest.TestCase):
 
         x = generate_physical_data(self.batch_size, self.num_particles)
 
-        output = model(x)
+        output = classification_tensor(model(x))
 
         self.assertEqual(output.shape, (self.batch_size, num_classes))
 
@@ -388,7 +393,7 @@ class TestParticleTransformer(unittest.TestCase):
         for batch_size in [1, 4, 8]:
             x = generate_physical_data(batch_size, self.num_particles)
 
-            output = self.model(x)
+            output = classification_tensor(self.model(x))
 
             self.assertEqual(output.shape, (batch_size, self.num_classes))
 
@@ -397,7 +402,7 @@ class TestParticleTransformer(unittest.TestCase):
         for num_particles in [4, 8, 32]:
             x = generate_physical_data(self.batch_size, num_particles)
 
-            output = self.model(x)
+            output = classification_tensor(self.model(x))
 
             self.assertEqual(output.shape, (self.batch_size, self.num_classes))
 
@@ -405,7 +410,7 @@ class TestParticleTransformer(unittest.TestCase):
         """Test that output contains no NaN or inf values."""
         x = generate_physical_data(self.batch_size, self.num_particles)
 
-        output = self.model(x)
+        output = classification_tensor(self.model(x))
 
         self.assertFalse(torch.isnan(output).any())
         self.assertFalse(torch.isinf(output).any())
@@ -429,8 +434,8 @@ class TestParticleTransformer(unittest.TestCase):
         x = generate_physical_data(self.batch_size, self.num_particles)
 
         with torch.no_grad():
-            output1 = self.model(x)
-            output2 = self.model(x)
+            output1 = classification_tensor(self.model(x))
+            output2 = classification_tensor(self.model(x))
 
         # In eval mode, same input should give same output (no dropout randomness)
         self.assertTrue(torch.allclose(output1, output2))
@@ -442,7 +447,7 @@ class TestParticleTransformer(unittest.TestCase):
         x = generate_physical_data(self.batch_size, self.num_particles)
 
         # Run forward pass to update BN statistics
-        output = self.model(x)
+        output = classification_tensor(self.model(x))
 
         self.assertIsNotNone(output)
         self.assertEqual(output.shape, (self.batch_size, self.num_classes))
@@ -471,7 +476,7 @@ class TestIntegration(unittest.TestCase):
         # Training step
         model.train()
         optimizer.zero_grad()
-        output = model(x)
+        output = classification_tensor(model(x))
         loss = criterion(output, target)
         loss.backward()
         optimizer.step()
@@ -494,7 +499,7 @@ class TestIntegration(unittest.TestCase):
         x = generate_physical_data(1, 10)
 
         with torch.no_grad():
-            output = model(x)
+            output = classification_tensor(model(x))
             probs = torch.softmax(output, dim=-1)
 
         self.assertEqual(probs.shape, (1, 2))
@@ -524,7 +529,7 @@ class TestIntegration(unittest.TestCase):
             mask[i, :length] = True
 
         with torch.no_grad():
-            output = model(x, particle_mask=mask)
+            output = classification_tensor(model(x, particle_mask=mask))
 
         self.assertEqual(output.shape, (batch_size, 1))
         self.assertFalse(torch.isnan(output).any())

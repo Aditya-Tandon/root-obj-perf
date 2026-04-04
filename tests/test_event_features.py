@@ -1,73 +1,77 @@
 #!/usr/bin/env python3
-"""
-Quick test of event_features module on a small sample.
-"""
+"""Dataset-free sanity tests for canonical di-Higgs utilities."""
 
-import sys
 import os
+import sys
+import unittest
+
+import awkward as ak
+import numpy as np
+import vector
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-try:
-    from event_features import pair_jets_to_higgs, extract_hh_features
-    from data_pipeline.root_loading import load_and_prepare_data
-    import awkward as ak
-    import vector
+from evaluation.dihiggs import R_hh_func, compute_significance, pair_from_4jets
 
-    print("✓ Imports successful")
 
-    # Test with minimal data
-    print("\n=== Testing pair_jets_to_higgs ===")
+class TestEventLevelHelpers(unittest.TestCase):
+    def setUp(self):
+        ak.behavior.update(vector.backends.awkward.behavior)
+        pt = [[100.0, 80.0, 60.0, 50.0]]
+        eta = [[0.5, -0.3, 1.2, -0.8]]
+        phi = [[0.1, 1.5, -0.5, 2.0]]
+        mass = [[15.0, 12.0, 18.0, 10.0]]
+        vectors = ak.zip(
+            {"pt": pt, "eta": eta, "phi": phi, "mass": mass},
+            with_name="Momentum4D",
+        )
+        self.jets4 = ak.zip(
+            {
+                "pt": pt,
+                "eta": eta,
+                "phi": phi,
+                "mass": mass,
+                "vector": vectors,
+            },
+            with_name="Momentum4D",
+        )
 
-    # Create mock jets
-    ak.behavior.update(vector.backends.awkward.behavior)
+    def test_pair_from_4jets(self):
+        lead, sub, hh = pair_from_4jets(self.jets4)
+        self.assertEqual(len(lead), 1)
+        self.assertEqual(len(sub), 1)
+        self.assertEqual(len(hh), 1)
+        self.assertGreater(float(lead.mass[0]), 0.0)
+        self.assertGreater(float(sub.mass[0]), 0.0)
+        self.assertGreater(float(hh.mass[0]), 0.0)
+        self.assertGreaterEqual(float(lead.pt[0]), float(sub.pt[0]))
 
-    mock_jets = ak.zip(
-        {
-            "pt": [[100, 80, 60, 50]],
-            "eta": [[0.5, -0.3, 1.2, -0.8]],
-            "phi": [[0.1, 1.5, -0.5, 2.0]],
-            "mass": [[15, 12, 18, 10]],
-            "vector": [
-                ak.zip(
-                    {
-                        "pt": [100, 80, 60, 50],
-                        "eta": [0.5, -0.3, 1.2, -0.8],
-                        "phi": [0.1, 1.5, -0.5, 2.0],
-                        "mass": [15, 12, 18, 10],
-                    },
-                    with_name="Momentum4D",
-                )
-            ],
-        }
-    )
+    def test_r_hh_func(self):
+        r0 = R_hh_func(np.array([125.0]), np.array([120.0]))
+        self.assertAlmostEqual(float(r0[0]), 0.0, places=7)
 
-    h1, h2 = pair_jets_to_higgs(mock_jets)
-    print(f"H1 mass: {h1.mass[0]:.1f} GeV")
-    print(f"H2 mass: {h2.mass[0]:.1f} GeV")
-    print(f"HH mass: {(h1 + h2).mass[0]:.1f} GeV")
+    def test_compute_significance(self):
+        sig_mh1 = np.array([124.0, 126.0, 180.0])
+        sig_mh2 = np.array([119.0, 121.0, 170.0])
+        bkg_mh1 = np.array([90.0, 130.0, 200.0])
+        bkg_mh2 = np.array([80.0, 118.0, 210.0])
 
-    print("\n✓ pair_jets_to_higgs works!")
+        res = compute_significance(
+            sig_mh1,
+            sig_mh2,
+            bkg_mh1,
+            bkg_mh2,
+            region="circular",
+            r_hh_cut=25.0,
+        )
 
-    # Test feature extraction
-    print("\n=== Testing extract_hh_features ===")
+        self.assertIn("S", res)
+        self.assertIn("B", res)
+        self.assertIn("significance", res)
+        self.assertGreaterEqual(res["S"], 0.0)
+        self.assertGreaterEqual(res["B"], 0.0)
+        self.assertGreaterEqual(res["significance"], 0.0)
 
-    class MockEvents:
-        pass
 
-    events = MockEvents()
-    features = extract_hh_features(events, mock_jets)
-
-    print(f"Extracted features: {list(features.keys())}")
-    print(f"m_HH: {features['m_hh'][0]:.1f} GeV")
-    print(f"pT_HH: {features['pt_hh'][0]:.1f} GeV")
-
-    print("\n✓ extract_hh_features works!")
-    print("\n=== ALL TESTS PASSED ===")
-
-except Exception as e:
-    print(f"✗ Test failed: {e}")
-    import traceback
-
-    traceback.print_exc()
-    sys.exit(1)
+if __name__ == "__main__":
+    unittest.main()
