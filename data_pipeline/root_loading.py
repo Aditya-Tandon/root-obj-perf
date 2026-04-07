@@ -464,5 +464,5 @@ def load_event_level_data(
     jet_events = ak.zip(jet_fields)
 
     n_events = len(events)
-    print(f"Loaded {n_events} events with L1ExtPuppi particles and offline jets.")
+    print(f"Loaded {n_events} events with {puppi_collection} particles and offline jets.")
     return puppi_events, jet_events, n_events
