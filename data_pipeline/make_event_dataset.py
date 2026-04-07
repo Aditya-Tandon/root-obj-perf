@@ -238,6 +238,7 @@ def generate_event_dataset(
     max_signal_events=None,
     max_qcd_events_per_bin=None,
     flatten_spectrum=True,
+    collection_key="l1extpuppi"
 ):
     """
     Full pipeline: load ROOT files → feature extraction
@@ -278,6 +279,7 @@ def generate_event_dataset(
     sig_puppi, sig_jets, n_sig = load_event_level_data(
         file_pattern=config["file_pattern"],
         tree_name=config["tree_name"],
+        puppi_collection=config[collection_key]["collection_name"],
         jet_collection=l1ext_collection,
         jet_tagger_field=l1ext_tagger,
         max_events=max_signal_events,
@@ -308,9 +310,10 @@ def generate_event_dataset(
         all_mask.append(m)
 
     all_y.extend([1.0] * n_sig_pass)
-    sig_ht = ak.to_numpy(ak.sum(sig_jets_pass.pt, axis=1)).astype(np.float32)
+    sig_ht = ak.to_numpy(ak.sum(sig_puppi_pass.pt, axis=1)).astype(np.float32)
     all_ht.extend(sig_ht.tolist())
-    all_qcd_weights.extend([1.0] * n_sig_pass)  # signal gets weight 1.0
+    sig_xsec_weight = config["physics"]["signal_xsec_pb"] * 1000.0 / config["physics"]["n_gen_signal"]  # convert pb to fb and divide by n_gen
+    all_qcd_weights.extend([sig_xsec_weight] * n_sig_pass)  # signal events get weighted by the signal cross section
 
     # ── QCD background ───────────────────────────────────────────────
     print("\n=== Loading QCD background ===")
@@ -325,6 +328,7 @@ def generate_event_dataset(
             qcd_puppi, qcd_jets, n_qcd = load_event_level_data(
                 file_pattern=bin_cfg["file_pattern"],
                 tree_name=bin_cfg["tree_name"],
+                puppi_collection=config[collection_key]["collection_name"],
                 jet_collection=l1ext_collection,
                 jet_tagger_field=l1ext_tagger,
                 max_events=max_evts,
@@ -367,7 +371,7 @@ def generate_event_dataset(
             all_mask.append(m)
 
         all_y.extend([0.0] * n_qcd_pass)
-        qcd_ht = ak.to_numpy(ak.sum(qcd_jets_pass.pt, axis=1)).astype(np.float32)
+        qcd_ht = ak.to_numpy(ak.sum(qcd_puppi_pass.pt, axis=1)).astype(np.float32)
         all_ht.extend(qcd_ht.tolist())
         all_qcd_weights.extend([per_event_xsec] * n_qcd_pass)
 
@@ -475,6 +479,12 @@ if __name__ == "__main__":
         default=True,
         help="Flatten the spectrum when computing kinematic weights",
     )
+    parser.add_argument(
+        "--collection_key",
+        type=str,
+        default="l1extpuppi",
+        help="Key for the particle collection to use"
+    )
     args = parser.parse_args()
 
     generate_event_dataset(
@@ -485,4 +495,5 @@ if __name__ == "__main__":
         max_signal_events=args.max_signal_events,
         max_qcd_events_per_bin=args.max_qcd_events_per_bin,
         flatten_spectrum=args.flatten_spectrum,
+        collection_key=args.collection_key,
     )
