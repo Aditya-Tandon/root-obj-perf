@@ -568,18 +568,56 @@ def main():
     plt.close(fig)
 
     # ── Cell 8: ROC analysis & comparison with other taggers ──────────
-    import copy, gc
-    from data_pipeline.root_loading import apply_custom_cuts, load_and_prepare_data, select_gen_b_quarks_from_higgs
-    from evaluation.jet_matching import get_purity_mask_cross_matched
-    from evaluation.roc import roc_from_scores, get_roc_point_at_mistag, get_working_points
+    from data_pipeline.root_loading import apply_custom_cuts, load_and_prepare_data
+    import evaluation.roc as roc_utils
+    import evaluation.luminosity as luminosity_utils
+    import importlib
+    from evaluation.roc import get_working_points
     from evaluation.efficiency import efficiency_table
     from evaluation.roc import pr_auc_and_opt_s_over_root_b
     from plotting.base import plot_roc_comparison
     from sklearn.metrics import roc_curve, auc
 
+    if "sig_weights" not in roc_utils.roc_from_scores.__code__.co_varnames:
+        roc_utils = importlib.reload(roc_utils)
+    roc_from_scores = roc_utils.roc_from_scores
+
+    if not hasattr(luminosity_utils, "build_eval_weights"):
+        luminosity_utils = importlib.reload(luminosity_utils)
+
     # Re-load config (may have been mutated)
     with open("hh-bbbb-obj-config.json", "r") as f:
         config = json.load(f)
+
+    eval_weight_mode = "full_physics"  # "unweighted" | "qcd_only" | "full_physics"
+    ref_tagger_mode = "btag"  # "btag" (QCD b-jets in signal class) | "trigger" (all QCD as background)
+    cache_pt_cut_gev = 25.0  # Set to None to disable cached-jet pT filtering
+
+    _cache_candidates = [
+        "data/reference_tagger_cache.npz",
+        "../data/reference_tagger_cache.npz",
+    ]
+    CACHE_PATH = next(
+        (p for p in _cache_candidates if os.path.exists(p)), _cache_candidates[-1]
+    )
+    print(f"Using reference tagger cache: {CACHE_PATH}")
+    if cache_pt_cut_gev is None:
+        print("Cached-jet pT cut: disabled")
+    else:
+        print(f"Cached-jet pT cut: pT >= {cache_pt_cut_gev:.1f} GeV")
+
+    cache = np.load(CACHE_PATH, allow_pickle=False)
+
+    _sigma_to_ngen = dict(
+        zip(
+            cache["meta_sigmas"].astype(float),
+            cache["meta_ngens"].astype(int),
+        )
+    )
+    _phys = config["physics"]
+    _luminosity_fb = _phys["luminosity_fb"]
+    _signal_xsec_pb = _phys["signal_xsec_pb"]
+    _n_gen_signal = _phys["n_gen_signal"]
 
     # Create vector array from reconstructed jet kinematics for cuts
     val_jet_vectors = vector.array(
@@ -598,169 +636,198 @@ def main():
     # Keep kinematic training weights separately for reweighting visualisation plots
     all_kinematic_weights_after_cuts = all_weights_val[val_cuts_mask]
 
-
-    # Compute ROC curve
-    fpr, tpr, thresholds = roc_curve(all_labels_after_cuts, all_outputs_after_cuts, sample_weight=all_weights_after_cuts)
-    roc_auc = auc(fpr, tpr)
-
-    # Load reference collections for comparison
-    events = load_and_prepare_data(
-        config["file_pattern"],
-        config["tree_name"],
-        [
-            "GenPart",
-            config["offline"]["collection_name"],
-            config["l1ng"]["collection_name"],
-            config["l1ext"]["collection_name"],
-        ],
-        config["max_events"],
-        correct_pt=True,
-    )
-
-    # UParT config
-    upart_CONFIG = copy.deepcopy(config)
-    upart_CONFIG["offline"]["tagger_name"] = "btagUParTAK4B"
-    upart_CONFIG["offline"]["b_tag_cut"] = 0.00496
-
-    upart_events = load_and_prepare_data(
-        upart_CONFIG["file_pattern"],
-        upart_CONFIG["tree_name"],
-        [upart_CONFIG["offline"]["collection_name"]],
-        upart_CONFIG["max_events"],
-        CONFIG=upart_CONFIG,
-    )
-
-    # Gen-level b-quarks for matching
-    gen_b_quarks = select_gen_b_quarks_from_higgs(events)
-    gen_b_quarks = gen_b_quarks[
-        (gen_b_quarks.pt > config["gen"]["pt_cut"])
-        & (abs(gen_b_quarks.eta) < config["gen"]["eta_cut"])
-    ]
-
-    # Build signal jets (gen-matched pure) for each tagger
-    tagger_defs = [
-        ("Offline PNet", "offline", config, config["offline"]["tagger_name"]),
-        ("Offline UParT", "offline", upart_CONFIG, upart_CONFIG["offline"]["tagger_name"]),
-        ("L1NG", "l1ng", config, config["l1ng"]["tagger_name"]),
-        ("L1Ext", "l1ext", config, config["l1ext"]["tagger_name"]),
-    ]
-
-    signal_jets_kinematic = {
-        "Offline PNet": apply_custom_cuts(
-            events[config["offline"]["collection_name"]],
-            config,
-            "offline",
-            kinematic_only=True,
-        ),
-        "Offline UParT": apply_custom_cuts(
-            upart_events[upart_CONFIG["offline"]["collection_name"]],
-            upart_CONFIG,
-            "offline",
-            kinematic_only=True,
-        ),
-        "L1NG": apply_custom_cuts(
-            events[config["l1ng"]["collection_name"]], config, "l1ng", kinematic_only=True
-        ),
-        "L1Ext": apply_custom_cuts(
-            events[config["l1ext"]["collection_name"]], config, "l1ext", kinematic_only=True
-        ),
+    # Reference tagger ROC from cache
+    tagger_cache_map = {
+        "Offline PNet": "Offline_PNet",
+        "L1NG": "L1NG",
+        "L1Ext": "L1Ext",
     }
 
-    signal_purity_masks = {}
-    for lbl in signal_jets_kinematic:
-        signal_purity_masks[lbl] = get_purity_mask_cross_matched(
-            gen_b_quarks, signal_jets_kinematic[lbl]
-        )
-
-    # Load QCD jets in chunks and build per-jet raw cross-section weights.
-    QCD_CHUNK_SIZE = 5000
-    all_collections = list({cfg[key]["collection_name"] for _, key, cfg, _ in tagger_defs})
-    qcd_config = config.get("QCD_background", {})
-
-    qcd_scores_inclusive = {lbl: [] for lbl, *_ in tagger_defs}
-    qcd_weights_inclusive = {lbl: [] for lbl, *_ in tagger_defs}
-
-    print("\nLoading QCD jets for reference tagger ROCs (chunked, all events)...")
-    for bin_name, bin_cfg in sorted(qcd_config.items(), key=lambda x: x[1]["weight"]):
-        w_qcd_cross_section = bin_cfg["weight"]  # raw sigma_bin
-        n_bin_total = 0
-        offset = 0
-        chunk_idx = 0
-
-        while True:
-            try:
-                qcd_events = load_and_prepare_data(
-                    bin_cfg["file_pattern"],
-                    bin_cfg.get("tree_name", "Events"),
-                    all_collections,
-                    QCD_CHUNK_SIZE,
-                    correct_pt=True,
-                    CONFIG=config,
-                    entry_start=offset,
-                )
-            except Exception as e:
-                print(f"  {bin_name} chunk {chunk_idx}: error - {e}")
-                break
-
-            n_loaded = len(qcd_events)
-            if n_loaded == 0:
-                del qcd_events
-                gc.collect()
-                break
-
-            for lbl, key, cfg, tagger_name in tagger_defs:
-                collection_name = cfg[key]["collection_name"]
-                qcd_jets = apply_custom_cuts(
-                    qcd_events[collection_name], cfg, key, kinematic_only=True
-                )
-                scores = ak.to_numpy(ak.flatten(getattr(qcd_jets, tagger_name)))
-                qcd_scores_inclusive[lbl].append(scores)
-                qcd_weights_inclusive[lbl].append(
-                    np.full(len(scores), w_qcd_cross_section, dtype=np.float64)
-                )
-
-            n_bin_total += n_loaded
-            offset += n_loaded
-            chunk_idx += 1
-            del qcd_events
-            gc.collect()
-
-        print(
-            f"  {bin_name}: {chunk_idx} chunks, {n_bin_total} events, raw_sigma={w_qcd_cross_section:.3e}"
-        )
-
-    # Concatenate all chunks
-    for lbl in qcd_scores_inclusive:
-        if qcd_scores_inclusive[lbl]:
-            qcd_scores_inclusive[lbl] = np.concatenate(qcd_scores_inclusive[lbl])
-            qcd_weights_inclusive[lbl] = np.concatenate(qcd_weights_inclusive[lbl])
-        else:
-            qcd_scores_inclusive[lbl] = np.array([])
-            qcd_weights_inclusive[lbl] = np.array([], dtype=np.float64)
-
-    print("\nQCD jets loaded.")
-    for lbl in qcd_scores_inclusive:
-        print(f"  {lbl}: {len(qcd_scores_inclusive[lbl]):,} QCD jets")
-
-    # ROC: signal (gen-matched) vs QCD background
     ref_roc_results = {}
-    for lbl, key, cfg, tagger_name in tagger_defs:
-        sig_jets = signal_jets_kinematic[lbl]
-        pure_mask = signal_purity_masks[lbl]
-        sig_scores = ak.to_numpy(ak.flatten(getattr(sig_jets[pure_mask], tagger_name)))
-        bkg_scores = qcd_scores_inclusive[lbl]
-        bkg_wts = qcd_weights_inclusive[lbl]
-        roc_data = roc_from_scores(sig_scores, bkg_scores, bkg_weights=bkg_wts)
-        ref_roc_results[lbl] = roc_data
+    for label, prefix in tagger_cache_map.items():
+        required_keys = [
+            f"{prefix}_sig_scores",
+            f"{prefix}_sig_pt",
+            f"{prefix}_qcd_scores",
+            f"{prefix}_qcd_labels",
+            f"{prefix}_qcd_weights",
+            f"{prefix}_qcd_pt",
+        ]
+        missing = [k for k in required_keys if k not in cache]
+        if missing:
+            raise KeyError(f"Missing cache arrays for {label}: {missing}")
+
+        sig_scores = cache[f"{prefix}_sig_scores"]
+        sig_pt = cache[f"{prefix}_sig_pt"]
+        qcd_scores = cache[f"{prefix}_qcd_scores"]
+        qcd_labels = cache[f"{prefix}_qcd_labels"]
+        qcd_weights_raw = cache[f"{prefix}_qcd_weights"]
+        qcd_pt = cache[f"{prefix}_qcd_pt"]
+
+        n_sig_before = len(sig_scores)
+        n_qcd_before = len(qcd_scores)
+        if cache_pt_cut_gev is not None:
+            sig_keep = sig_pt >= cache_pt_cut_gev
+            qcd_keep = qcd_pt >= cache_pt_cut_gev
+
+            sig_scores = sig_scores[sig_keep]
+            qcd_scores = qcd_scores[qcd_keep]
+            qcd_labels = qcd_labels[qcd_keep]
+            qcd_weights_raw = qcd_weights_raw[qcd_keep]
+
+        if ref_tagger_mode == "btag":
+            qcd_b_mask = qcd_labels == 1
+            qcd_l_mask = ~qcd_b_mask
+
+            hh_sig_scores = sig_scores
+            qcd_b_sig_scores = qcd_scores[qcd_b_mask]
+            qcd_b_sig_w_raw = qcd_weights_raw[qcd_b_mask]
+
+            bkg_scores = qcd_scores[qcd_l_mask]
+            bkg_w_raw = qcd_weights_raw[qcd_l_mask]
+            sig_scores_combined = np.concatenate([hh_sig_scores, qcd_b_sig_scores])
+
+            n_hh_sig = len(hh_sig_scores)
+            n_qcd_b_sig = len(qcd_b_sig_scores)
+            n_sig = len(sig_scores_combined)
+            n_bkg = len(bkg_scores)
+            if n_sig == 0 or n_bkg == 0:
+                raise ValueError(
+                    f"After pT/mode selection, {label} has n_sig={n_sig}, n_bkg={n_bkg}. "
+                    "Lower cache_pt_cut_gev or change ref_tagger_mode."
+                )
+
+            if eval_weight_mode == "unweighted":
+                sig_w = np.ones(n_sig, dtype=np.float64)
+                bkg_w = np.ones(n_bkg, dtype=np.float64)
+            elif eval_weight_mode == "qcd_only":
+                qcd_b_sig_w = luminosity_utils.scale_qcd_weights_raw(
+                    qcd_b_sig_w_raw, _sigma_to_ngen, _luminosity_fb
+                )
+                bkg_w = luminosity_utils.scale_qcd_weights_raw(
+                    bkg_w_raw, _sigma_to_ngen, _luminosity_fb
+                )
+                sig_w = np.concatenate(
+                    [
+                        np.ones(n_hh_sig, dtype=np.float64),
+                        qcd_b_sig_w,
+                    ]
+                )
+            elif eval_weight_mode == "full_physics":
+                hh_sig_w = luminosity_utils.signal_weight(
+                    n_hh_sig,
+                    luminosity_fb=_luminosity_fb,
+                    signal_xsec_pb=_signal_xsec_pb,
+                    n_gen_signal=_n_gen_signal,
+                )
+                qcd_b_sig_w = luminosity_utils.scale_qcd_weights_raw(
+                    qcd_b_sig_w_raw, _sigma_to_ngen, _luminosity_fb
+                )
+                bkg_w = luminosity_utils.scale_qcd_weights_raw(
+                    bkg_w_raw, _sigma_to_ngen, _luminosity_fb
+                )
+                sig_w = np.concatenate([hh_sig_w, qcd_b_sig_w])
+            else:
+                raise ValueError(
+                    f"Unknown eval_weight_mode {eval_weight_mode!r}. "
+                    "Choose from 'unweighted', 'qcd_only', 'full_physics'."
+                )
+
+            mode_summary = f"HH+QCDb signal: {n_hh_sig:,}+{n_qcd_b_sig:,}"
+        else:
+            sig_scores_combined = sig_scores
+            bkg_scores = qcd_scores
+            bkg_w_raw = qcd_weights_raw
+
+            n_sig = len(sig_scores_combined)
+            n_bkg = len(bkg_scores)
+            if n_sig == 0 or n_bkg == 0:
+                raise ValueError(
+                    f"After pT/mode selection, {label} has n_sig={n_sig}, n_bkg={n_bkg}. "
+                    "Lower cache_pt_cut_gev or change ref_tagger_mode."
+                )
+
+            eval_w = luminosity_utils.build_eval_weights(
+                bkg_w_raw,
+                _sigma_to_ngen,
+                n_sig,
+                mode=eval_weight_mode,
+                luminosity_fb=_luminosity_fb,
+                signal_xsec_pb=_signal_xsec_pb,
+                n_gen_signal=_n_gen_signal,
+            )
+            sig_w = eval_w[:n_sig]
+            bkg_w = eval_w[n_sig:]
+            mode_summary = "HH-only signal"
+
+        roc_data = roc_from_scores(
+            sig_scores_combined,
+            bkg_scores,
+            sig_weights=sig_w,
+            bkg_weights=bkg_w,
+        )
+        ref_roc_results[label] = roc_data
+        print(
+            f"  {label}: AUC = {roc_data[2]:.4f}  |  n_sig = {n_sig:,}  |  n_bkg = {n_bkg:,} "
+            f"| pT-cut kept sig {len(sig_scores):,}/{n_sig_before:,}, qcd {len(qcd_scores):,}/{n_qcd_before:,} "
+            f"| {mode_summary}"
+        )
+
+    del cache
+    gc.collect()
+
+    # Trained ParT ROC with the same weighting mode convention
+    trained_scores = np.asarray(all_outputs_after_cuts).reshape(-1)
+    trained_labels = np.asarray(all_labels_after_cuts).astype(int).reshape(-1)
+    trained_qcd_w_raw = np.asarray(all_weights_after_cuts).reshape(-1)
+
+    if len(trained_qcd_w_raw) != len(trained_labels):
+        raise ValueError(
+            f"Length mismatch for trained arrays: len(labels)={len(trained_labels)}, "
+            f"len(qcd_weights_raw)={len(trained_qcd_w_raw)}"
+        )
+
+    roc_weights = np.ones(len(trained_labels), dtype=np.float64)
+    bkg_mask = trained_labels == 0
+    sig_mask = ~bkg_mask
+
+    if eval_weight_mode == "qcd_only":
+        print("Using QCD-only weighting for ROC calculation.")
+        roc_weights[bkg_mask] = luminosity_utils.scale_qcd_weights_raw(
+            trained_qcd_w_raw[bkg_mask], _sigma_to_ngen, _luminosity_fb
+        )
+    elif eval_weight_mode == "full_physics":
+        print("Using full-physics weighting for ROC calculation.")
+        roc_weights[bkg_mask] = luminosity_utils.scale_qcd_weights_raw(
+            trained_qcd_w_raw[bkg_mask], _sigma_to_ngen, _luminosity_fb
+        )
+        roc_weights[sig_mask] = luminosity_utils.signal_weight(
+            int(np.sum(sig_mask)),
+            luminosity_fb=_luminosity_fb,
+            signal_xsec_pb=_signal_xsec_pb,
+            n_gen_signal=_n_gen_signal,
+        )
+    elif eval_weight_mode == "unweighted":
+        print("Using uniform weights for ROC calculation.")
+    else:
+        raise ValueError(
+            f"Unknown eval_weight_mode {eval_weight_mode!r}. "
+            "Choose from 'unweighted', 'qcd_only', 'full_physics'."
+        )
+
+    roc_weights = np.asarray(roc_weights, dtype=np.float32)
+    fpr, tpr, thresholds = roc_curve(
+        trained_labels,
+        trained_scores,
+        sample_weight=roc_weights,
+    )
+    roc_auc = auc(fpr, tpr)
 
     offline_roc = ref_roc_results["Offline PNet"]
-    offline_roc_upart = ref_roc_results["Offline UParT"]
     l1ng_roc = ref_roc_results["L1NG"]
     l1ext_roc = ref_roc_results["L1Ext"]
 
-
     pnet_wps = get_working_points("Offline PNet", offline_roc)
-    upart_wps = get_working_points("Offline UParT", offline_roc_upart)
     l1ng_wps = get_working_points("L1NG", l1ng_roc)
     l1ext_wps = get_working_points("L1ExtJet", l1ext_roc)
     part_wps = get_working_points("Trained ParT", (fpr, tpr, roc_auc, thresholds))
@@ -829,6 +896,305 @@ def main():
     df_pr_srb = pr_auc_and_opt_s_over_root_b(pt_bins_eff, eta_bins_eff, labels, scores, jet_pt_cuts, jet_eta_cuts, thr, sample_weights=all_weights_after_cuts)
     print("\nPer-bin PR-AUC and optimal S/sqrt(B)")
     print(df_pr_srb.to_string())
+
+    # Notebook parity (Cell 11): compare PR and significance across weighting modes.
+    modes_to_compare = ["unweighted", "qcd_only", "full_physics"]
+    ref_mode_for_prsig = "trigger"
+    pt_cut_for_prsig = cache_pt_cut_gev if "cache_pt_cut_gev" in locals() else 25.0
+
+    if "_sigma_to_ngen" not in locals():
+        _sigma_to_ngen = {b["weight"]: b["n_gen"] for b in config["QCD_background"].values()}
+    if "_luminosity_fb" not in locals():
+        _luminosity_fb = config["physics"]["luminosity_fb"]
+    if "_signal_xsec_pb" not in locals():
+        _signal_xsec_pb = config["physics"]["signal_xsec_pb"]
+    if "_n_gen_signal" not in locals():
+        _n_gen_signal = config["physics"]["n_gen_signal"]
+
+    cache_candidates_prsig = [
+        "data/reference_tagger_cache.npz",
+        "../data/reference_tagger_cache.npz",
+    ]
+    cache_path_prsig = next(
+        (p for p in cache_candidates_prsig if os.path.exists(p)),
+        cache_candidates_prsig[-1],
+    )
+    cache_prsig = np.load(cache_path_prsig, allow_pickle=False)
+
+    tagger_cache_map_prsig = {
+        "Offline PNet": "Offline_PNet",
+        "L1NG": "L1NG",
+        "L1Ext": "L1Ext",
+    }
+
+    def _weights_for_mode_trigger_style(n_sig, bkg_w_raw, mode):
+        if mode == "unweighted":
+            sig_w = np.ones(n_sig, dtype=np.float64)
+            bkg_w = np.ones(len(bkg_w_raw), dtype=np.float64)
+        elif mode == "qcd_only":
+            sig_w = np.ones(n_sig, dtype=np.float64)
+            bkg_w = luminosity_utils.scale_qcd_weights_raw(
+                bkg_w_raw,
+                _sigma_to_ngen,
+                _luminosity_fb,
+            )
+        elif mode == "full_physics":
+            sig_w = luminosity_utils.signal_weight(
+                n_sig,
+                luminosity_fb=_luminosity_fb,
+                signal_xsec_pb=_signal_xsec_pb,
+                n_gen_signal=_n_gen_signal,
+            )
+            bkg_w = luminosity_utils.scale_qcd_weights_raw(
+                bkg_w_raw,
+                _sigma_to_ngen,
+                _luminosity_fb,
+            )
+        else:
+            raise ValueError(f"Unknown mode {mode!r}")
+        return sig_w, bkg_w
+
+    def _cache_scores_weights(prefix, mode, ref_mode, pt_cut_gev):
+        sig_scores = cache_prsig[f"{prefix}_sig_scores"]
+        sig_pt = cache_prsig[f"{prefix}_sig_pt"]
+        qcd_scores = cache_prsig[f"{prefix}_qcd_scores"]
+        qcd_labels = cache_prsig[f"{prefix}_qcd_labels"]
+        qcd_weights_raw = cache_prsig[f"{prefix}_qcd_weights"]
+        qcd_pt = cache_prsig[f"{prefix}_qcd_pt"]
+
+        if pt_cut_gev is not None:
+            sig_keep = sig_pt >= pt_cut_gev
+            qcd_keep = qcd_pt >= pt_cut_gev
+            sig_scores = sig_scores[sig_keep]
+            qcd_scores = qcd_scores[qcd_keep]
+            qcd_labels = qcd_labels[qcd_keep]
+            qcd_weights_raw = qcd_weights_raw[qcd_keep]
+
+        if ref_mode == "btag":
+            qcd_b_mask = qcd_labels == 1
+            qcd_l_mask = ~qcd_b_mask
+
+            hh_sig_scores = sig_scores
+            qcd_b_sig_scores = qcd_scores[qcd_b_mask]
+            qcd_b_sig_w_raw = qcd_weights_raw[qcd_b_mask]
+            bkg_scores = qcd_scores[qcd_l_mask]
+            bkg_w_raw = qcd_weights_raw[qcd_l_mask]
+            n_hh_sig = len(hh_sig_scores)
+
+            if mode == "unweighted":
+                hh_sig_w = np.ones(n_hh_sig, dtype=np.float64)
+                qcd_b_sig_w = np.ones(len(qcd_b_sig_scores), dtype=np.float64)
+                sig_w = np.concatenate([hh_sig_w, qcd_b_sig_w])
+                bkg_w = np.ones(len(bkg_scores), dtype=np.float64)
+            elif mode == "qcd_only":
+                hh_sig_w = np.ones(n_hh_sig, dtype=np.float64)
+                qcd_b_sig_w = luminosity_utils.scale_qcd_weights_raw(
+                    qcd_b_sig_w_raw,
+                    _sigma_to_ngen,
+                    _luminosity_fb,
+                )
+                sig_w = np.concatenate([hh_sig_w, qcd_b_sig_w])
+                bkg_w = luminosity_utils.scale_qcd_weights_raw(
+                    bkg_w_raw,
+                    _sigma_to_ngen,
+                    _luminosity_fb,
+                )
+            elif mode == "full_physics":
+                hh_sig_w = luminosity_utils.signal_weight(
+                    n_hh_sig,
+                    luminosity_fb=_luminosity_fb,
+                    signal_xsec_pb=_signal_xsec_pb,
+                    n_gen_signal=_n_gen_signal,
+                )
+                qcd_b_sig_w = luminosity_utils.scale_qcd_weights_raw(
+                    qcd_b_sig_w_raw,
+                    _sigma_to_ngen,
+                    _luminosity_fb,
+                )
+                sig_w = np.concatenate([hh_sig_w, qcd_b_sig_w])
+                bkg_w = luminosity_utils.scale_qcd_weights_raw(
+                    bkg_w_raw,
+                    _sigma_to_ngen,
+                    _luminosity_fb,
+                )
+            else:
+                raise ValueError(f"Unknown mode {mode!r}")
+
+            sig_scores_combined = np.concatenate([hh_sig_scores, qcd_b_sig_scores])
+            return sig_scores_combined, bkg_scores, sig_w, bkg_w
+
+        bkg_scores = qcd_scores
+        bkg_w_raw = qcd_weights_raw
+        sig_w, bkg_w = _weights_for_mode_trigger_style(len(sig_scores), bkg_w_raw, mode)
+        return sig_scores, bkg_scores, sig_w, bkg_w
+
+    def _class_normalize_weights(sig_w, bkg_w, target_sum=1.0):
+        sig_norm = sig_w / (np.sum(sig_w) + 1e-30) * target_sum
+        bkg_norm = bkg_w / (np.sum(bkg_w) + 1e-30) * target_sum
+        return sig_norm, bkg_norm
+
+    def _curves(sig_scores, bkg_scores, sig_w_phys, bkg_w_phys, thr_grid):
+        y_true = np.concatenate(
+            [
+                np.ones(len(sig_scores), dtype=np.int32),
+                np.zeros(len(bkg_scores), dtype=np.int32),
+            ]
+        )
+        y_score = np.concatenate([sig_scores, bkg_scores])
+
+        sw_phys = np.concatenate([sig_w_phys, bkg_w_phys])
+        sig_w_norm, bkg_w_norm = _class_normalize_weights(sig_w_phys, bkg_w_phys)
+        sw_norm = np.concatenate([sig_w_norm, bkg_w_norm])
+
+        precision_norm, recall_norm, _ = precision_recall_curve(
+            y_true,
+            y_score,
+            sample_weight=sw_norm,
+        )
+        pr_auc_norm = average_precision_score(y_true, y_score, sample_weight=sw_norm)
+        pr_auc_phys = average_precision_score(y_true, y_score, sample_weight=sw_phys)
+
+        srb = []
+        for t in thr_grid:
+            s = np.sum(sig_w_phys[sig_scores >= t])
+            b = np.sum(bkg_w_phys[bkg_scores >= t])
+            srb.append(s / np.sqrt(b + s + 1e-30))
+        srb = np.asarray(srb, dtype=np.float64)
+
+        return precision_norm, recall_norm, pr_auc_norm, pr_auc_phys, srb
+
+    part_scores_all = np.asarray(all_outputs_after_cuts)
+    part_labels_all = np.asarray(all_labels_after_cuts).astype(int)
+    part_sig_scores = part_scores_all[part_labels_all == 1]
+    part_bkg_scores = part_scores_all[part_labels_all == 0]
+    part_bkg_w_raw = np.asarray(all_weights_after_cuts)[part_labels_all == 0]
+
+    if len(part_sig_scores) > 0 and len(part_bkg_scores) > 0:
+        thr_grid = np.linspace(0.0, 1.0, 301)
+        all_tagger_labels = ["Offline PNet", "L1NG", "L1Ext", "Trained ParT"]
+
+        fig, axes = plt.subplots(
+            2,
+            len(all_tagger_labels),
+            figsize=(7 * len(all_tagger_labels), 10),
+            squeeze=False,
+        )
+
+        mode_style = {
+            "unweighted": {"linestyle": "-", "linewidth": 2.0},
+            "qcd_only": {"linestyle": "--", "linewidth": 2.0},
+            "full_physics": {"linestyle": ":", "linewidth": 2.4},
+        }
+
+        prsig_mode_compare_results = {label: {} for label in all_tagger_labels}
+
+        for col, label in enumerate(all_tagger_labels):
+            ax_pr = axes[0, col]
+            ax_sig = axes[1, col]
+
+            for mode in modes_to_compare:
+                if label == "Trained ParT":
+                    sig_w_mode, bkg_w_mode = _weights_for_mode_trigger_style(
+                        len(part_sig_scores),
+                        part_bkg_w_raw,
+                        mode,
+                    )
+                    sig_scores_mode = part_sig_scores
+                    bkg_scores_mode = part_bkg_scores
+                else:
+                    prefix = tagger_cache_map_prsig[label]
+                    (
+                        sig_scores_mode,
+                        bkg_scores_mode,
+                        sig_w_mode,
+                        bkg_w_mode,
+                    ) = _cache_scores_weights(
+                        prefix,
+                        mode,
+                        ref_mode_for_prsig,
+                        pt_cut_for_prsig,
+                    )
+
+                (
+                    precision_mode,
+                    recall_mode,
+                    pr_auc_norm_mode,
+                    pr_auc_phys_mode,
+                    srb_mode,
+                ) = _curves(
+                    sig_scores_mode,
+                    bkg_scores_mode,
+                    sig_w_mode,
+                    bkg_w_mode,
+                    thr_grid,
+                )
+
+                best_idx = int(np.argmax(srb_mode))
+                best_thr = float(thr_grid[best_idx])
+                best_srb = float(srb_mode[best_idx])
+
+                prsig_mode_compare_results[label][mode] = {
+                    "pr_auc_class_normalized": pr_auc_norm_mode,
+                    "pr_auc_physics_weighted": pr_auc_phys_mode,
+                    "best_s_over_sqrt_s_plus_b": best_srb,
+                    "best_threshold": best_thr,
+                }
+
+                style = mode_style[mode]
+                ax_pr.plot(
+                    recall_mode,
+                    precision_mode,
+                    label=f"{mode} (PR-AUCnorm={pr_auc_norm_mode:.5f})",
+                    **style,
+                )
+                ax_sig.plot(
+                    thr_grid,
+                    srb_mode,
+                    label=f"{mode} (max={best_srb:.3e} @ {best_thr:.3f})",
+                    **style,
+                )
+
+            ax_pr.set_title(label)
+            ax_pr.set_xlabel("Recall")
+            if col == 0:
+                ax_pr.set_ylabel("Precision")
+            ax_pr.grid(alpha=0.3)
+
+            ax_sig.set_xlabel("Threshold")
+            if col == 0:
+                ax_sig.set_ylabel(r"$S/\sqrt{S+B}$")
+            ax_sig.grid(alpha=0.3)
+
+        axes[0, -1].legend(loc="lower left", fontsize=9)
+        axes[1, -1].legend(loc="upper right", fontsize=8)
+
+        pt_cut_text = "None" if pt_cut_for_prsig is None else f"{pt_cut_for_prsig:.1f} GeV"
+        fig.suptitle(
+            (
+                "PR (class-normalized) and significance (physics-weighted) "
+                f"comparison across modes | cache ref_mode={ref_mode_for_prsig}, pT_cut={pt_cut_text}"
+            ),
+            fontsize=14,
+        )
+        plt.tight_layout()
+        save_fig(fig, f"pr_significance_compare_modes_with_part_{ref_mode_for_prsig}")
+        plt.close(fig)
+
+        print("\nSummary (mode comparison):")
+        for label in all_tagger_labels:
+            print(f"\n{label}")
+            for mode in modes_to_compare:
+                res_mode = prsig_mode_compare_results[label][mode]
+                print(
+                    f"  {mode:>12}: PR-AUCnorm={res_mode['pr_auc_class_normalized']:.6f} | "
+                    f"PR-AUCphys={res_mode['pr_auc_physics_weighted']:.6f} | "
+                    f"max S/sqrt(S+B)={res_mode['best_s_over_sqrt_s_plus_b']:.3e} @ "
+                    f"thr={res_mode['best_threshold']:.3f}"
+                )
+    else:
+        print("Skipping PR/significance mode comparison due to missing signal or background samples.")
+
+    del cache_prsig
 
     if not should_run(args.profile, "standard"):
         print(
@@ -977,7 +1343,6 @@ def main():
     fig_roc = plot_roc_comparison(
         [
             ("Offline PNet", offline_roc),
-            ("Offline UParT", offline_roc_upart),
             ("L1NG", l1ng_roc),
             ("L1ExtJet", l1ext_roc),
             ("Trained ParT", (fpr, tpr, roc_auc, thresholds)),
@@ -999,7 +1364,7 @@ def main():
 
     auc_matrix, count_matrix = calculate_trained_roc_2d_bins(
         pt_ranges, eta_ranges, val_jet_pt_cuts, val_jet_eta_cuts,
-        all_labels_after_cuts, all_outputs_after_cuts, weights=all_weights_after_cuts,
+        all_labels_after_cuts, all_outputs_after_cuts, weights=roc_weights,
     )
 
     pt_labels_hm = [f"[{low},{high})" for low, high in pt_ranges]
@@ -1026,7 +1391,7 @@ def main():
     print("Computing AUC with bootstrap uncertainties...")
     auc_matrix_u, unc_matrix_u, count_matrix_u = calculate_auc_uncertainty_2d_bins(
         pt_ranges, eta_ranges, val_jet_pt_cuts, val_jet_eta_cuts,
-        all_labels_after_cuts, all_outputs_after_cuts, weights=all_weights_after_cuts, n_boot=50,
+        all_labels_after_cuts, all_outputs_after_cuts, weights=roc_weights, n_boot=50,
     )
 
     annot_u = np.empty_like(auc_matrix_u, dtype=object)
@@ -1134,7 +1499,7 @@ def main():
             ax_sig.legend(fontsize="small")
 
             plt.tight_layout()
-            save_fig(fig, f"constituent_{feat_name.lower().replace(' ', '_')}_by_particle_type")
+            save_fig(fig, f"constituent_{feat_name.lower().replace(' ', '_')}_by_type")
             plt.close(fig)
 
         print(f"  Saved {len(feature_names)} constituent feature plots (by particle type)")
@@ -1201,7 +1566,7 @@ def main():
             ax2.legend()
 
             plt.tight_layout()
-            save_fig(fig, "particle_type_composition_signal_vs_background")
+            save_fig(fig, "particle_composition_signal_vs_background")
             plt.close(fig)
 
             fig, axes = plt.subplots(1, N_PARTICLE_TYPES, figsize=(24, 5), sharey=True)
@@ -2352,6 +2717,7 @@ def main():
 
     sig_window_h = (90, 160)
     sig_window_hh = (250, 550)
+    R_HH_CUT = 55.0
 
     # 1. Signal vs QCD: 1x3 overlay
     fig, axes = plt.subplots(1, 3, figsize=(24, 7))
@@ -2482,6 +2848,143 @@ def main():
         print(f"  Unweighted QCD events: {res['n_qcd']}")
     else:
         print(f"{label:<30}  Insufficient events for significance")
+
+    # 4. R_HH distribution (signal vs weighted QCD)
+    fig, ax = plt.subplots(figsize=(10, 7))
+    rhh_bins = np.linspace(0, 300, 61)
+
+    if res["n_signal"] > 0:
+        sig_rhh = R_hh_func(
+            ak.to_numpy(res["sig_lead"].mass),
+            ak.to_numpy(res["sig_sub"].mass),
+        )
+        ax.hist(
+            sig_rhh,
+            bins=rhh_bins,
+            histtype="stepfilled",
+            alpha=0.30,
+            color=color_dh,
+            label=f'Signal ({res["n_signal"]})',
+        )
+        ax.hist(sig_rhh, bins=rhh_bins, histtype="step", linewidth=2, color=color_dh)
+
+    if res["n_qcd"] > 0:
+        bkg_rhh = R_hh_func(
+            ak.to_numpy(res["qcd_lead"].mass),
+            ak.to_numpy(res["qcd_sub"].mass),
+        )
+        ax.hist(
+            bkg_rhh,
+            bins=rhh_bins,
+            histtype="step",
+            linewidth=2,
+            color="grey",
+            linestyle="--",
+            label=f'QCD ({res["n_qcd"]} events, weighted)',
+            weights=qcd_weights,
+        )
+
+    ax.axvline(
+        R_HH_CUT,
+        color="red",
+        linestyle=":",
+        linewidth=2,
+        label=f"$R_{{HH}}$ cut = {R_HH_CUT:.0f} GeV",
+    )
+    ax.axvspan(0, R_HH_CUT, alpha=0.06, color="red")
+    ax.set_xlabel("$R_{HH}$ [GeV]")
+    ax.set_ylabel("Events / 5 GeV (QCD weighted)")
+    ax.set_title(f"{label} - $R_{{HH}}$ distribution")
+    ax.set_yscale("log")
+    ax.grid(True, alpha=0.3, which="both")
+    ax.legend(fontsize=10)
+    plt.tight_layout()
+    save_fig(fig, f"rhh_distribution_{WP_SELECTION}")
+    plt.close(fig)
+
+    # 5. 2D mH1 vs mH2 with R_HH ellipse
+    bins_2d_rhh = np.linspace(0, 300, 61)
+    fig, axes = plt.subplots(1, 2, figsize=(20, 8))
+
+    for ax_idx, (category, lead_key, sub_key, n_events, w) in enumerate(
+        [
+            ("Signal", "sig_lead", "sig_sub", res["n_signal"], None),
+            ("Simulated QCD", "qcd_lead", "qcd_sub", res["n_qcd"], qcd_weights),
+        ]
+    ):
+        ax = axes[ax_idx]
+
+        if n_events > 0:
+            lead_mass = ak.to_numpy(res[lead_key].mass)
+            sub_mass = ak.to_numpy(res[sub_key].mass)
+            r_hh_vals = R_hh_func(lead_mass, sub_mass)
+            sel = r_hh_vals < R_HH_CUT
+
+            h = ax.hist2d(
+                lead_mass,
+                sub_mass,
+                bins=[bins_2d_rhh, bins_2d_rhh],
+                cmap="viridis",
+                weights=w,
+            )
+
+            ax.axvline(125, color="red", linestyle="--", linewidth=1.5, label="$m_{H1}=125$ GeV")
+            ax.axhline(120, color="red", linestyle="--", linewidth=1.5)
+
+            ellipse = Ellipse(
+                xy=(125, 120),
+                width=2 * R_HH_CUT,
+                height=2 * R_HH_CUT,
+                angle=0,
+                edgecolor="yellow",
+                facecolor="none",
+                linestyle="--",
+                linewidth=2,
+                label=f"$R_{{HH}}$ = {R_HH_CUT:.0f} GeV",
+            )
+            ax.add_patch(ellipse)
+
+            n_sel = int(np.sum(sel))
+            if w is not None:
+                w_sel = float(np.sum(w[sel]))
+                w_tot = float(np.sum(w))
+                ax.set_title(
+                    f"{label} - {category}\n"
+                    f"({n_sel}/{n_events} inside $R_{{HH}}$, weighted: {w_sel:.1e}/{w_tot:.1e})"
+                )
+            else:
+                ax.set_title(f"{label} - {category}\n({n_sel}/{n_events} inside $R_{{HH}}$)")
+
+            fig.colorbar(
+                h[3],
+                ax=ax,
+                label="Weighted Events" if w is not None else "Events",
+            )
+        else:
+            ax.text(
+                0.5,
+                0.5,
+                f"No {category.lower()} events",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=14,
+            )
+            ax.set_title(f"{label} - {category}")
+
+        ax.set_xlabel("Leading Higgs Mass [GeV]")
+        ax.set_ylabel("Subleading Higgs Mass [GeV]")
+        ax.legend(loc="upper right", fontsize=10)
+
+    fig.suptitle(
+        f"2D $m_{{H1}}$ vs $m_{{H2}}$ - {label} ({reg_tag}), $R_{{HH}}<{R_HH_CUT:.0f}$",
+        fontsize=16,
+        y=1.02,
+    )
+    plt.tight_layout()
+    save_fig(fig, f"dihiggs_mass_2d_rhh_{WP_SELECTION}")
+    plt.close(fig)
+
     print("=" * 90)
     print(f"\nWorking point: {WP_SELECTION} (threshold={PART_BTAG_THRESHOLD:.4f})")
     print(f"pT regression: {'applied' if res['has_regression'] and apply_pt_correction else 'not applied'}")
@@ -3427,11 +3930,17 @@ def main():
     perm_x = all_constituents[:n_perm_samples].float().to(device)
     perm_mask = perm_x[:, :, 1] > 0
     perm_labels = all_labels[:n_perm_samples]
+    if "roc_weights" in locals() and len(roc_weights) >= n_perm_samples:
+        perm_weights = np.asarray(roc_weights[:n_perm_samples], dtype=np.float64)
+    elif "all_qcd_weights_val" in locals() and len(all_qcd_weights_val) >= n_perm_samples:
+        perm_weights = np.asarray(all_qcd_weights_val[:n_perm_samples], dtype=np.float64)
+    else:
+        perm_weights = np.ones(n_perm_samples, dtype=np.float64)
     model.eval()
     with torch.no_grad():
         tmep_outputs = model(perm_x, particle_mask=perm_mask)
         baseline_outputs_fi = torch.sigmoid(tmep_outputs["classification"]).squeeze().cpu().numpy()
-    baseline_auc = roc_auc_score_fi(perm_labels, baseline_outputs_fi)
+    baseline_auc = roc_auc_score_fi(perm_labels, baseline_outputs_fi, sample_weight=perm_weights)
     print(f"  Baseline AUC: {baseline_auc:.4f}")
 
     perm_importance = np.zeros(len(input_feature_names))
@@ -3446,7 +3955,7 @@ def main():
                 tmep_outputs = model(perm_x_copy, particle_mask=perm_mask)
                 perm_outputs_fi = torch.sigmoid(tmep_outputs["classification"]).squeeze().cpu().numpy()
             try:
-                perm_auc = roc_auc_score_fi(perm_labels, perm_outputs_fi)
+                perm_auc = roc_auc_score_fi(perm_labels, perm_outputs_fi, sample_weight=perm_weights)
                 auc_drops.append(baseline_auc - perm_auc)
             except:
                 auc_drops.append(0)
@@ -3464,7 +3973,7 @@ def main():
             tmep_outputs = model(ablated_x, particle_mask=perm_mask)
             ablated_outputs = torch.sigmoid(tmep_outputs["classification"]).squeeze().cpu().numpy()
         try:
-            ablated_auc = roc_auc_score_fi(perm_labels, ablated_outputs)
+            ablated_auc = roc_auc_score_fi(perm_labels, ablated_outputs, sample_weight=perm_weights)
             ablation_importance[feat_idx] = baseline_auc - ablated_auc
         except:
             ablation_importance[feat_idx] = 0
@@ -3912,6 +4421,28 @@ def main():
     print("MODEL BEHAVIOR ANALYSIS & MAXIMUM DISCRIMINATIVE POWER ESTIMATION")
     print("=" * 70)
 
+    # Notebook parity: use post-cut arrays and ROC-consistent weights when available.
+    _all_labels_full = all_labels
+    _all_outputs_full = all_outputs
+    _val_jet_pt_full = val_jet_pt
+    _val_jet_eta_full = val_jet_eta
+    _all_constituents_full = all_constituents
+
+    if "all_labels_after_cuts" in locals() and "all_outputs_after_cuts" in locals():
+        all_labels = np.asarray(all_labels_after_cuts).reshape(-1)
+        all_outputs = np.asarray(all_outputs_after_cuts).reshape(-1)
+        if "val_cuts_mask" in locals() and len(val_cuts_mask) == len(_val_jet_pt_full):
+            val_jet_pt = _val_jet_pt_full[val_cuts_mask]
+            val_jet_eta = _val_jet_eta_full[val_cuts_mask]
+            if len(_all_constituents_full) == len(val_cuts_mask):
+                all_constituents = _all_constituents_full[val_cuts_mask]
+
+    roc_weights_mb = (
+        np.asarray(roc_weights).reshape(-1)
+        if "roc_weights" in locals() and len(roc_weights) == len(all_labels)
+        else np.ones(len(all_labels), dtype=np.float64)
+    )
+
     # 1. Error analysis
     print("\n1. ERROR ANALYSIS")
     print("-" * 50)
@@ -4007,7 +4538,11 @@ def main():
         test_idx_knn = np.setdiff1d(np.arange(n_knn), train_idx_knn)
         knn.fit(knn_features[train_idx_knn], knn_labels[train_idx_knn])
         knn_proba = knn.predict_proba(knn_features[test_idx_knn])[:, 1]
-        knn_auc = roc_auc_score_fi(knn_labels[test_idx_knn], knn_proba)
+        knn_auc = roc_auc_score_fi(
+            knn_labels[test_idx_knn],
+            knn_proba,
+            sample_weight=roc_weights_mb[:n_knn][test_idx_knn],
+        )
         knn_aucs.append(knn_auc)
         print(f"    k={k_knn:>2}: AUC = {knn_auc:.4f}")
     best_knn_auc = max(knn_aucs)
@@ -4042,7 +4577,7 @@ def main():
     n_background_mb = len(all_labels) - n_signal_mb
     class_ratio = n_signal_mb / len(all_labels)
     print(f"    Class balance: {100*class_ratio:.1f}% signal / {100*(1-class_ratio):.1f}% background")
-    current_auc = roc_auc_score_fi(all_labels, all_outputs)
+    current_auc = roc_auc_score_fi(all_labels, all_outputs, sample_weight=roc_weights_mb)
     print(f"    Random classifier AUC: 0.5000")
     print(f"    Current model AUC: {current_auc:.4f}")
     print(f"    Best k-NN AUC: {best_knn_auc:.4f}")
@@ -4116,7 +4651,13 @@ def main():
     for i_pt in range(len(pt_bin_edges_mb) - 1):
         mask_pt = (val_jet_pt >= pt_bin_edges_mb[i_pt]) & (val_jet_pt < pt_bin_edges_mb[i_pt + 1])
         if mask_pt.sum() > 50 and len(np.unique(all_labels[mask_pt])) > 1:
-            pt_aucs.append(roc_auc_score_fi(all_labels[mask_pt], all_outputs[mask_pt]))
+            pt_aucs.append(
+                roc_auc_score_fi(
+                    all_labels[mask_pt],
+                    all_outputs[mask_pt],
+                    sample_weight=roc_weights_mb[mask_pt],
+                )
+            )
         else:
             pt_aucs.append(np.nan)
     ax.bar(range(len(pt_aucs)), pt_aucs, color="steelblue", alpha=0.7)
@@ -4237,6 +4778,13 @@ def main():
     print(f"\n{'='*70}")
     print("Model behavior analysis complete!")
     print(f"{'='*70}")
+
+    # Restore full arrays for downstream full-profile sections.
+    all_labels = _all_labels_full
+    all_outputs = _all_outputs_full
+    val_jet_pt = _val_jet_pt_full
+    val_jet_eta = _val_jet_eta_full
+    all_constituents = _all_constituents_full
 
     if not should_run(args.profile, "full"):
         print("\nAll analysis complete!")
