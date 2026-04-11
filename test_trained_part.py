@@ -1221,8 +1221,7 @@ def main():
     n_total = len(full_dataset)
     BATCH_SIZE = 10000
 
-    # We only take a maximum 100,000 jets to fit feature distributions to avoid OOM
-    MAX_JETS_FOR_HIST = 100000
+    MAX_JETS_FOR_HIST = int(1e10)
     n_to_load = min(n_total, MAX_JETS_FOR_HIST)
 
     # Accumulate batched data
@@ -1432,8 +1431,55 @@ def main():
 
         sig_vals = x_features[:, :, i][sig_mask_2d]
         bkg_vals = x_features[:, :, i][bkg_mask_2d]
-        ax.hist(sig_vals.flatten(), bins=50, range=(np.percentile(sig_vals, 1), np.percentile(sig_vals, 99)), histtype="step", label="Signal (b-jets)", color="blue", density=True)
-        ax.hist(bkg_vals.flatten(), bins=50, range=(np.percentile(bkg_vals, 1), np.percentile(bkg_vals, 99)), histtype="step", label="Background", color="red", density=True)
+        sig_vals = np.asarray(sig_vals).ravel()
+        bkg_vals = np.asarray(bkg_vals).ravel()
+        sig_vals = sig_vals[np.isfinite(sig_vals)]
+        bkg_vals = bkg_vals[np.isfinite(bkg_vals)]
+
+        if sig_vals.size == 0 and bkg_vals.size == 0:
+            ax.text(
+                0.5,
+                0.5,
+                "No valid values after masking",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+        else:
+            all_vals = np.concatenate(
+                [arr for arr in (sig_vals, bkg_vals) if arr.size > 0]
+            )
+            lo = np.percentile(all_vals, 1)
+            hi = np.percentile(all_vals, 99)
+
+            if not np.isfinite(lo) or not np.isfinite(hi):
+                lo = np.nanmin(all_vals)
+                hi = np.nanmax(all_vals)
+            if hi <= lo:
+                span = max(1e-6, abs(lo) * 1e-3 + 1e-6)
+                lo -= span
+                hi += span
+
+            if sig_vals.size > 0:
+                ax.hist(
+                    sig_vals,
+                    bins=50,
+                    range=(lo, hi),
+                    histtype="step",
+                    label="Signal (b-jets)",
+                    color="blue",
+                    density=True,
+                )
+            if bkg_vals.size > 0:
+                ax.hist(
+                    bkg_vals,
+                    bins=50,
+                    range=(lo, hi),
+                    histtype="step",
+                    label="Background",
+                    color="red",
+                    density=True,
+                )
         ax.legend()
         ax.set_xlabel(f"Constituent {feat_name}")
         ax.set_ylabel("Density")
