@@ -2215,14 +2215,10 @@ def main():
     from data_pipeline.make_particle_dataset import cluster_candidates
     from data_pipeline.root_loading import load_and_prepare_data, select_gen_b_quarks_from_higgs, apply_custom_cuts, one_hot_encode_l1_puppi
     from evaluation.jet_matching import get_purity_mask_cross_matched
-    from evaluation.dihiggs import pair_from_4jets, find_gen_b_pairs_with_indices, R_hh_func
+    from evaluation.dihiggs import pair_from_4jets, find_gen_b_pairs_with_indices, R_hh_func, compute_significance_at_luminosity
 
     # Configuration
     apply_pt_correction = True
-    WP_SELECTION = "tight"
-    wp_index = {"tight": 0, "medium": 1, "loose": 2}[WP_SELECTION]
-    PART_BTAG_THRESHOLD = part_wps[wp_index]
-    print(f"\nWorking point: {WP_SELECTION} → ParT b-tag threshold = {PART_BTAG_THRESHOLD:.4f}")
 
     dataset_used = config_part.get("training", {}).get("data", {}).get("use_dataset", "pf")
     if dataset_used == "pf":
@@ -2421,7 +2417,7 @@ def main():
     print(f"Clustered & scored {n_jets_total} jets across {n_events_total} events")
 
     # Step 4: Di-Higgs reconstruction
-    print("\n--- Running di-Higgs reconstruction ---")
+    print("\n--- Running di-Higgs reconstruction (notebook-parity AK4 workflow) ---")
 
     dihiggs_gen_b = select_gen_b_quarks_from_higgs(dihiggs_events)
     dihiggs_gen_b = dihiggs_gen_b[
@@ -2429,60 +2425,64 @@ def main():
         & (abs(dihiggs_gen_b.eta) < config["gen"]["eta_cut"])
     ]
 
+    # Notebook-parity AK4 flow:
+    # 1) score all clustered jets, keep top-4 (no b-tag threshold)
+    # 2) compute purity/pairing at event level
+    # 3) apply WP threshold afterwards using min(top4 btag)
     jets_btag_sorted = scored_jets[ak.argsort(scored_jets.btag_score, ascending=False)]
-    jets_tagged = jets_btag_sorted[jets_btag_sorted.btag_score > PART_BTAG_THRESHOLD]
-    print(f"Jets per event after b-tag cut: mean={ak.mean(ak.num(jets_tagged)):.1f}")
+    has_4_clustered = ak.num(jets_btag_sorted) >= 4
+    sig_jets_all = jets_btag_sorted[has_4_clustered][:, :4]
+    n_sig_4jet = len(sig_jets_all)
+    print(
+        f"Signal events with >=4 clustered jets (pre-threshold): {n_sig_4jet}/{len(jets_btag_sorted)}"
+    )
 
-    has_4_tagged = ak.num(jets_tagged) >= 4
-    sig_jets_all = jets_tagged[has_4_tagged][:, :4]
-    print(f"Events with >=4 tagged jets: {ak.sum(has_4_tagged)}/{len(jets_tagged)}")
-
-    gen_b_for_match = dihiggs_gen_b[has_4_tagged]
-    dr_reco = sig_jets_all[:, :, None].vector.deltaR(gen_b_for_match[:, None, :].vector)
-    idx_gen_for_reco = ak.argmin(dr_reco, axis=2)
-    min_dr_reco = ak.fill_none(ak.min(dr_reco, axis=2), np.inf)
-
-    dr_gen = gen_b_for_match[:, :, None].vector.deltaR(sig_jets_all[:, None, :].vector)
-    idx_reco_for_gen = ak.argmin(dr_gen, axis=2)
-
-    back_check = idx_reco_for_gen[idx_gen_for_reco]
-    reco_idx = ak.local_index(sig_jets_all, axis=1)
-
-    pure_mask = (ak.fill_none(back_check, -1) == reco_idx) & (min_dr_reco < config["matching_cone_size"])
-
-    signal_mask_evt = ak.sum(pure_mask, axis=1) == 4
-
-    n_signal = int(ak.sum(signal_mask_evt))
-    n_total = int(ak.sum(has_4_tagged))
-    print(f"Signal events (all 4 pure): {n_signal}")
-    print(f"Total events with >=4 tagged jets: {n_total}")
-
-
-    sig_jets_4 = sig_jets_all[signal_mask_evt][:, :4]
-    if n_signal > 0:
-        sig_lead, sig_sub, sig_hh = pair_from_4jets(sig_jets_4)
-        print(f"\nSignal mHH: mean={ak.mean(sig_hh.mass):.1f}, median={np.median(ak.to_numpy(sig_hh.mass)):.1f} GeV")
+    if n_sig_4jet > 0:
+        sig_lead_all, sig_sub_all, sig_hh_all = pair_from_4jets(sig_jets_all)
+        _sig_min_btag = ak.to_numpy(sig_jets_all.btag_score[:, 3])
     else:
-        sig_lead = sig_sub = sig_hh = ak.Array([])
-        print("\nNo signal events found!")
+        sig_lead_all = sig_sub_all = sig_hh_all = ak.Array([])
+        _sig_min_btag = np.array([], dtype=np.float64)
 
-    # Pairing efficiency
-    pair_eff = 0.0
-    eff_swapped = 0.0
-    if n_signal > 0:
-        print("\n--- Computing Pairing Efficiency ---")
-        sig_gen_b = gen_b_for_match[signal_mask_evt]
-        sig_gen_particles = dihiggs_events.GenPart[has_4_tagged][signal_mask_evt]
+    gen_b_for_match = dihiggs_gen_b[has_4_clustered]
+    if n_sig_4jet > 0:
+        dr_reco = sig_jets_all[:, :, None].vector.deltaR(gen_b_for_match[:, None, :].vector)
+        idx_gen_for_reco = ak.argmin(dr_reco, axis=2)
+        min_dr_reco = ak.fill_none(ak.min(dr_reco, axis=2), np.inf)
 
-        dr_sig = sig_jets_4[:, :, None].vector.deltaR(sig_gen_b[:, None, :].vector)
+        dr_gen = gen_b_for_match[:, :, None].vector.deltaR(sig_jets_all[:, None, :].vector)
+        idx_reco_for_gen = ak.argmin(dr_gen, axis=2)
+
+        back_check = idx_reco_for_gen[idx_gen_for_reco]
+        reco_idx = ak.local_index(sig_jets_all, axis=1)
+        pure_mask = (ak.fill_none(back_check, -1) == reco_idx) & (
+            min_dr_reco < config["matching_cone_size"]
+        )
+        _sig_is_pure = ak.to_numpy(ak.sum(pure_mask, axis=1) == 4)
+    else:
+        _sig_is_pure = np.zeros(0, dtype=bool)
+
+    _sig_pair_ok = np.zeros(n_sig_4jet, dtype=bool)
+    _sig_pair_sw = np.zeros(n_sig_4jet, dtype=bool)
+
+    if int(_sig_is_pure.sum()) > 0:
+        print("\n--- Computing Pairing Efficiency (pre-threshold pure events) ---")
+        sig_jets_pure = sig_jets_all[_sig_is_pure][:, :4]
+        sig_gen_b = gen_b_for_match[_sig_is_pure]
+        sig_gen_particles = dihiggs_events.GenPart[has_4_clustered][_sig_is_pure]
+
+        dr_sig = sig_jets_pure[:, :, None].vector.deltaR(sig_gen_b[:, None, :].vector)
         gmpr = ak.argmin(dr_sig, axis=2)
 
-
-        _, _, true_h1_idxs, true_h2_idxs = find_gen_b_pairs_with_indices(gmpr, sig_gen_b, sig_gen_particles)
+        _, _, true_h1_idxs, true_h2_idxs = find_gen_b_pairs_with_indices(
+            gmpr,
+            sig_gen_b,
+            sig_gen_particles,
+        )
         true_h1_sorted = ak.sort(true_h1_idxs, axis=1)
         true_h2_sorted = ak.sort(true_h2_idxs, axis=1)
 
-        j = [sig_jets_4[:, i] for i in range(4)]
+        j = [sig_jets_pure[:, i] for i in range(4)]
         perm_pairs = [([0, 1], [2, 3]), ([0, 2], [1, 3]), ([0, 3], [1, 2])]
         h_vecs = [
             (j[a].vector + j[b].vector, j[c].vector + j[d].vector)
@@ -2509,16 +2509,26 @@ def main():
         algo_A_sorted = ak.sort(algo_pair_leading, axis=1)
         algo_B_sorted = ak.sort(algo_pair_subleading, axis=1)
 
-        match_direct = ak.all(algo_A_sorted == true_h1_sorted, axis=1) & ak.all(algo_B_sorted == true_h2_sorted, axis=1)
-        pair_eff = ak.mean(match_direct)
-        print(f"Pairing Efficiency: {pair_eff:.2%}")
+        match_direct = ak.all(algo_A_sorted == true_h1_sorted, axis=1) & ak.all(
+            algo_B_sorted == true_h2_sorted,
+            axis=1,
+        )
+        match_swapped = ak.all(algo_A_sorted == true_h2_sorted, axis=1) & ak.all(
+            algo_B_sorted == true_h1_sorted,
+            axis=1,
+        )
 
-        match_swapped = ak.all(algo_A_sorted == true_h2_sorted, axis=1) & ak.all(algo_B_sorted == true_h1_sorted, axis=1)
-        eff_swapped = ak.mean(match_swapped)
-        print(f"Pairing Efficiency with pairs swapped: {eff_swapped:.2%}")
-        print(f"Total Pairing Efficiency (including swapped): {pair_eff + eff_swapped:.2%}")
-    else:
-        print("\nSkipping pairing efficiency (no signal events)")
+        _sig_pair_ok[_sig_is_pure] = ak.to_numpy(match_direct)
+        _sig_pair_sw[_sig_is_pure] = ak.to_numpy(match_swapped)
+
+    _n_pure_all = int(_sig_is_pure.sum())
+    _pair_eff_all = float(_sig_pair_ok[_sig_is_pure].mean()) if _n_pure_all > 0 else 0.0
+    _pair_sw_all = float(_sig_pair_sw[_sig_is_pure].mean()) if _n_pure_all > 0 else 0.0
+    print(
+        f"Signal purity/pairing (pre-threshold): pure={_n_pure_all}, "
+        f"pair_eff={_pair_eff_all:.2%}, swap={_pair_sw_all:.2%}, "
+        f"total={_pair_eff_all + _pair_sw_all:.2%}"
+    )
 
     # QCD background — from QCD pT-binned ROOT files
     print("\n" + "=" * 60)
@@ -2526,9 +2536,10 @@ def main():
     print("=" * 60)
     qcd_config = config["QCD_background"]
     sigma_to_ngen = {bin_cfg["weight"]: bin_cfg["n_gen"] for bin_cfg in qcd_config.values()}
+    _qcd_min_btag_list = []
     all_qcd_lead, all_qcd_sub, all_qcd_hh = [], [], []
     all_qcd_weights_list = []
-    n_qcd_total = 0
+    n_qcd_4jet_total = 0
     n_qcd_events_processed = 0
 
     for bin_name, bin_cfg in qcd_config.items():
@@ -2574,52 +2585,197 @@ def main():
         )
 
         qcd_btag_sorted = qcd_scored[ak.argsort(qcd_scored.btag_score, ascending=False)]
-        qcd_tagged = qcd_btag_sorted[qcd_btag_sorted.btag_score > PART_BTAG_THRESHOLD]
-        has_4_tagged_qcd = ak.num(qcd_tagged) >= 4
-        qcd_4jets = qcd_tagged[has_4_tagged_qcd][:, :4]
+        has_4_qcd = ak.num(qcd_btag_sorted) >= 4
+        qcd_4jets = qcd_btag_sorted[has_4_qcd][:, :4]
 
-        n_events_bin = int(ak.sum(has_4_tagged_qcd))
+        n_events_bin = int(ak.sum(has_4_qcd))
         n_events_total_bin = len(qcd_scored)
-        print(f"  Events with >=4 tagged jets: {n_events_bin}/{n_events_total_bin}")
+        print(f"  Events with >=4 clustered jets: {n_events_bin}/{n_events_total_bin}")
 
         if n_events_bin > 0:
             q_lead, q_sub, q_hh = pair_from_4jets(qcd_4jets)
+            _qcd_min_btag_list.append(ak.to_numpy(qcd_4jets.btag_score[:, 3]))
             all_qcd_lead.append(q_lead)
             all_qcd_sub.append(q_sub)
             all_qcd_hh.append(q_hh)
             all_qcd_weights_list.append(
                 np.full(n_events_bin, bin_cfg["weight"], dtype=np.float64)
             )
-            n_qcd_total += n_events_bin
-            print(f"  → {n_events_bin} QCD events with >=4 b-tagged jets reconstructed")
+            n_qcd_4jet_total += n_events_bin
+            print(f"  → {n_events_bin} QCD events with >=4 jets stored")
         else:
-            print(f"  → No events with >=4 b-tagged jets in {bin_name}")
+            print(f"  → No events with >=4 jets in {bin_name}")
 
-    if n_qcd_total > 0:
-        qcd_lead = ak.concatenate(all_qcd_lead)
-        qcd_sub = ak.concatenate(all_qcd_sub)
-        qcd_hh = ak.concatenate(all_qcd_hh)
-        qcd_weights = np.concatenate(all_qcd_weights_list)
+    if n_qcd_4jet_total > 0:
+        _qcd_min_btag = np.concatenate(_qcd_min_btag_list)
+        qcd_lead_all = ak.concatenate(all_qcd_lead)
+        qcd_sub_all = ak.concatenate(all_qcd_sub)
+        qcd_hh_all = ak.concatenate(all_qcd_hh)
+        _qcd_weights_raw = np.concatenate(all_qcd_weights_list)
         print(
-            f"\nTotal QCD: {n_qcd_total} reconstructed events from {n_qcd_events_processed} processed"
+            f"\nTotal QCD with >=4 clustered jets: {n_qcd_4jet_total} "
+            f"from {n_qcd_events_processed} processed"
         )
         print(
-            f"QCD weights summary: min={qcd_weights.min():.1e}, max={qcd_weights.max():.1e}, "
-            f"sum={qcd_weights.sum():.3e}"
+            f"QCD raw weights summary: min={_qcd_weights_raw.min():.1e}, "
+            f"max={_qcd_weights_raw.max():.1e}, sum={_qcd_weights_raw.sum():.3e}"
         )
         print(
-            f"QCD mHH: weighted mean={np.average(ak.to_numpy(qcd_hh.mass), weights=qcd_weights):.1f}, "
-            f"unweighted median={np.median(ak.to_numpy(qcd_hh.mass)):.1f} GeV"
+            f"QCD mHH: weighted mean={np.average(ak.to_numpy(qcd_hh_all.mass), weights=_qcd_weights_raw):.1f}, "
+            f"unweighted median={np.median(ak.to_numpy(qcd_hh_all.mass)):.1f} GeV"
         )
     else:
-        qcd_lead = qcd_sub = qcd_hh = ak.Array([])
-        qcd_weights = np.array([], dtype=np.float64)
+        _qcd_min_btag = np.array([], dtype=np.float64)
+        qcd_lead_all = qcd_sub_all = qcd_hh_all = ak.Array([])
+        _qcd_weights_raw = np.array([], dtype=np.float64)
         print("\nNo QCD background events found!")
 
-    n_qcd = n_qcd_total
+    # Notebook parity Phase 2: significance sweep and WP selection after matching.
+    _sig_lead_m = ak.to_numpy(sig_lead_all.mass) if n_sig_4jet > 0 else np.array([])
+    _sig_sub_m = ak.to_numpy(sig_sub_all.mass) if n_sig_4jet > 0 else np.array([])
+    _qcd_lead_m = ak.to_numpy(qcd_lead_all.mass) if n_qcd_4jet_total > 0 else np.array([])
+    _qcd_sub_m = ak.to_numpy(qcd_sub_all.mass) if n_qcd_4jet_total > 0 else np.array([])
+
+    R_HH_CUT = 55.0
+    N_CUTS = 100
+    _btag_cuts = np.linspace(0.0, 0.99, N_CUTS)
+    _sig_sig = np.zeros(N_CUTS)
+    _S_arr = np.zeros(N_CUTS)
+    _B_arr = np.zeros(N_CUTS)
+
+    for _i, _cut in enumerate(_btag_cuts):
+        _sm = (_sig_min_btag >= _cut) & _sig_is_pure
+        _bm = _qcd_min_btag >= _cut
+        if _sm.sum() == 0 or _bm.sum() == 0:
+            continue
+        _r = compute_significance_at_luminosity(
+            _sig_lead_m[_sm],
+            _sig_sub_m[_sm],
+            _qcd_lead_m[_bm],
+            _qcd_sub_m[_bm],
+            bkg_raw_weights=_qcd_weights_raw[_bm],
+            sigma_to_ngen=sigma_to_ngen,
+            n_gen_signal=N_GEN_SIGNAL,
+            luminosity_fb=LUMINOSITY_FB,
+            signal_xsec_pb=SIGNAL_XSEC_PB,
+            region="circular",
+            r_hh_cut=R_HH_CUT,
+        )
+        _sig_sig[_i] = _r["significance"]
+        _S_arr[_i] = _r["S"]
+        _B_arr[_i] = _r["B"]
+
+    _best_idx = int(np.argmax(_sig_sig))
+    _best_cut = float(_btag_cuts[_best_idx])
+
+    wp_options = {
+        "tight": float(part_wps[0]),
+        "medium": float(part_wps[1]),
+        "loose": float(part_wps[2]),
+        "optimal": _best_cut,
+    }
+
+    print(f"{'='*80}")
+    print(f"B-tag cut sweep  (R_HH < {R_HH_CUT} GeV,  L = {LUMINOSITY_FB:.0f} fb^-1)")
+    print(f"{'='*80}")
+    print(
+        f"{'WP':<10} {'Cut':>7}  {'n_sig':>7}  {'n_qcd':>8}  "
+        f"{'S':>9}  {'B':>10}  {'Signif.':>9}  {'PairEff':>9}"
+    )
+    print("-" * 80)
+    for _wp_name, _wp_cut in wp_options.items():
+        _sm = (_sig_min_btag >= _wp_cut) & _sig_is_pure
+        _bm = _qcd_min_btag >= _wp_cut
+        _n_s = int(_sm.sum())
+        _n_b = int(_bm.sum())
+        if _n_s == 0 or _n_b == 0:
+            print(f"  {_wp_name:<8} {_wp_cut:>7.4f}  {'0':>7}  {'0':>8}  -")
+            continue
+
+        _r = compute_significance_at_luminosity(
+            _sig_lead_m[_sm],
+            _sig_sub_m[_sm],
+            _qcd_lead_m[_bm],
+            _qcd_sub_m[_bm],
+            bkg_raw_weights=_qcd_weights_raw[_bm],
+            sigma_to_ngen=sigma_to_ngen,
+            n_gen_signal=N_GEN_SIGNAL,
+            luminosity_fb=LUMINOSITY_FB,
+            signal_xsec_pb=SIGNAL_XSEC_PB,
+            region="circular",
+            r_hh_cut=R_HH_CUT,
+        )
+
+        _pure_at_wp = _sm
+        _eff_wp = _sig_pair_ok[_pure_at_wp].sum() / max(_pure_at_wp.sum(), 1)
+        _star = " *" if _wp_name == "optimal" else ""
+        print(
+            f"  {_wp_name:<8} {_wp_cut:>7.4f}  {_n_s:>7}  {_n_b:>8}  "
+            f"{_r['S']:>9.1f}  {_r['B']:>10.2e}  {_r['significance']:>9.3f}  "
+            f"{_eff_wp:>9.2%}{_star}"
+        )
+    print(f"{'='*80}")
+    print(f"  Optimal cut: {_best_cut:.4f}  (max significance in sweep)")
+
+    fig_sweep, ax_sweep = plt.subplots(figsize=(9, 4))
+    ax_sweep.plot(_btag_cuts, _sig_sig, color="mediumpurple", linewidth=2)
+    ax_sweep.axvline(
+        _best_cut,
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        label=f"Optimal = {_best_cut:.3f}",
+    )
+    ax_sweep.scatter([_best_cut], [_sig_sig[_best_idx]], color="red", s=90, zorder=6)
+    for _wp_name, _wp_cut in wp_options.items():
+        if _wp_name == "optimal":
+            continue
+        ax_sweep.axvline(
+            _wp_cut,
+            linestyle=":",
+            linewidth=1.2,
+            label=f"{_wp_name} = {_wp_cut:.3f}",
+        )
+    ax_sweep.set_xlabel("ParT btag_score threshold (all 4 jets >= cut)")
+    ax_sweep.set_ylabel("Significance $S/\\sqrt{S+B}$")
+    ax_sweep.set_title(f"Significance vs b-tag cut (R_HH < {R_HH_CUT} GeV)")
+    ax_sweep.legend(fontsize=9)
+    ax_sweep.grid(True, alpha=0.3)
+    plt.tight_layout()
+    save_fig(fig_sweep, "ak4_significance_vs_btag_cut")
+    plt.close(fig_sweep)
+
+    WP_SELECTION = "loose"  # choose from: tight | medium | loose | optimal
+    PART_BTAG_THRESHOLD = wp_options[WP_SELECTION]
+    print(
+        f"\nSelected WP: {WP_SELECTION}  (threshold = {PART_BTAG_THRESHOLD:.4f})"
+    )
+
+    _sig_mask = (_sig_min_btag >= PART_BTAG_THRESHOLD) & _sig_is_pure
+    _qcd_mask = _qcd_min_btag >= PART_BTAG_THRESHOLD
+    _tot_mask = _sig_min_btag >= PART_BTAG_THRESHOLD
+
+    n_signal = int(_sig_mask.sum())
+    n_qcd = int(_qcd_mask.sum())
+    n_total = int(_tot_mask.sum())
+
+    if n_signal > 0:
+        pair_eff = float(_sig_pair_ok[_sig_mask].sum() / max(n_signal, 1))
+        eff_swapped = float(_sig_pair_sw[_sig_mask].sum() / max(n_signal, 1))
+    else:
+        pair_eff = 0.0
+        eff_swapped = 0.0
+
+    sig_lead = sig_lead_all[_sig_mask] if n_sig_4jet > 0 else ak.Array([])
+    sig_sub = sig_sub_all[_sig_mask] if n_sig_4jet > 0 else ak.Array([])
+    sig_hh = sig_hh_all[_sig_mask] if n_sig_4jet > 0 else ak.Array([])
+    qcd_lead = qcd_lead_all[_qcd_mask] if n_qcd_4jet_total > 0 else ak.Array([])
+    qcd_sub = qcd_sub_all[_qcd_mask] if n_qcd_4jet_total > 0 else ak.Array([])
+    qcd_hh = qcd_hh_all[_qcd_mask] if n_qcd_4jet_total > 0 else ak.Array([])
+    qcd_weights = _qcd_weights_raw[_qcd_mask] if n_qcd_4jet_total > 0 else np.array([], dtype=np.float64)
 
     part_dihiggs_result = {
-        "label": f"Trained ParT ({WP_SELECTION})",
+        "label": f"Trained ParT ({WP_SELECTION} = {PART_BTAG_THRESHOLD:.4f})",
         "n_total": n_total, "n_signal": n_signal, "n_qcd": n_qcd,
         "sig_lead": sig_lead, "sig_sub": sig_sub, "sig_hh": sig_hh,
         "qcd_lead": qcd_lead, "qcd_sub": qcd_sub, "qcd_hh": qcd_hh,
@@ -2635,14 +2791,15 @@ def main():
     print(f"  Collection: {collection_key} ({dataset_used})")
     print(f"  Working point: {WP_SELECTION} (threshold={PART_BTAG_THRESHOLD:.4f})")
     print(
-        f"  Selected: {n_total} signal events with >=4 tagged jets = {n_total/n_events_total*100:.2f}% of {n_events_total} total HH events"
+        f"  Selected: {n_total} events with >=4 jets above threshold = "
+        f"{n_total/max(n_sig_4jet,1)*100:.2f}% of {n_sig_4jet} pre-threshold 4-jet events"
     )
-    print(f"  Signal (all 4 pure): {n_signal} events ({n_signal/max(n_total,1)*100:.1f}%)")
+    print(f"  Signal (all 4 pure, above threshold): {n_signal} events ({n_signal/max(n_total,1)*100:.1f}%)")
     print(
         f"  QCD background: {n_qcd} events (from {n_qcd_events_processed} QCD events processed)"
     )
     print(f"  pT regression: {'applied' if has_reg else 'not available'}")
-    print(f"  Pairing eff: {pair_eff:.2%} | Swapped: {eff_swapped:.2%} | Total: {pair_eff + eff_swapped:.2%}")
+    print(f"  Pairing eff @WP: {pair_eff:.2%} | Swapped: {eff_swapped:.2%} | Total: {pair_eff + eff_swapped:.2%}")
     print(f"{'='*60}")
 
     # ── Cell 23: Top-N jet purity efficiency ─────────────────────────
