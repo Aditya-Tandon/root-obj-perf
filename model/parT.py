@@ -161,9 +161,11 @@ class ParticleAttentionBlock(nn.Module):
         # Construct the Fused Bias Mask for SDPA
         if u_ij is not None:
             # (B, Heads, N, N)
-            fused_mask = self.pair_proj(u_ij).permute(0, 3, 1, 2) 
+            fused_mask = self.pair_proj(u_ij).permute(0, 3, 1, 2)
         else:
-            fused_mask = torch.zeros((B, self.num_heads, N, N), device=x.device, dtype=x.dtype)
+            fused_mask = torch.zeros(
+                (B, self.num_heads, N, N), device=x.device, dtype=x.dtype
+            )
 
         if particle_mask is not None:
             # SDPA treats float('-inf') as masked out, and adds standard floats as bias
@@ -178,11 +180,17 @@ class ParticleAttentionBlock(nn.Module):
         #     record_shapes=True
         # ) as prof:
         x = F.scaled_dot_product_attention(
-            q, k, v,
+            q,
+            k,
+            v,
             attn_mask=fused_mask,
             dropout_p=self.attn_drop.p if self.training else 0.0,
-            scale=self.scale
+            scale=self.scale,
         )
+
+        # exclusive self-attention
+        v_normed = F.normalize(v, dim=-1)
+        x = x - (x * v_normed).sum(dim=-1, keepdim=True) * v_normed
 
         x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
@@ -201,6 +209,8 @@ class ParticleAttentionBlock(nn.Module):
         #         print(f"Executed C++ Kernel: {event.key}")
 
         return x
+
+
 class ClassAttentionBlock(nn.Module):
     """
     Transformer Block for Class Token attention.
@@ -245,7 +255,7 @@ class ClassAttentionBlock(nn.Module):
             self.q(x_cls_norm)
             .reshape(B, 1, self.num_heads, C // self.num_heads)
             .transpose(1, 2)
-        ) # (B, Heads, 1, Head_Dim)
+        )  # (B, Heads, 1, Head_Dim)
 
         # Compute K and V for all tokens
         kv = (
@@ -253,7 +263,7 @@ class ClassAttentionBlock(nn.Module):
             .reshape(B, N_plus_1, 2, self.num_heads, C // self.num_heads)
             .permute(2, 0, 3, 1, 4)
         )
-        k, v = kv[0], kv[1] # (B, Heads, N+1, Head_Dim)
+        k, v = kv[0], kv[1]  # (B, Heads, N+1, Head_Dim)
 
         if particle_mask is not None:
             cls_mask = torch.ones((B, 1), dtype=torch.bool, device=x.device)
@@ -271,11 +281,16 @@ class ClassAttentionBlock(nn.Module):
         #     record_shapes=True
         # ) as prof:
         x_cls = F.scaled_dot_product_attention(
-            q_cls, k, v,
+            q_cls,
+            k,
+            v,
             attn_mask=attn_mask,
             dropout_p=self.attn_drop.p if self.training else 0.0,
-            scale=self.scale
+            scale=self.scale,
         )
+        # exclusive self-attention
+        v_normed_cls = F.normalize(v, dim=-1)[:, :, 0, :].unsqueeze(2)
+        x_cls = x_cls - (x_cls * v_normed_cls).sum(dim=-1, keepdim=True) * v_normed_cls
 
         # # Isolate the SDPA dispatch calls in the profiler trace
         # events = prof.key_averages()
@@ -283,7 +298,6 @@ class ClassAttentionBlock(nn.Module):
         #     if "scaled_dot_product" in event.key:
         #         print(f"Executed C++ Kernel: {event.key}")
 
-        
         x_cls = x_cls.transpose(1, 2).reshape(B, 1, C)
         x_cls = self.proj(x_cls)
         x_cls = self.attn_drop(x_cls)
@@ -309,6 +323,7 @@ class RegressionHead(nn.Module):
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(dropout))
         layers.append(nn.Linear(embed_dim, n_out))
+        # layers.append(nn.ReLU())
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
@@ -428,6 +443,14 @@ class ParticleTransformer(nn.Module):
         for block in self.part_atten_blocks:
             x = block(x, u_ij, particle_mask)
 
+        # if particle_mask is not None:
+        #     # masked mean: only average over real constituents
+        #     mask_f = particle_mask.unsqueeze(-1).float()  # (B, N, 1)
+        #     x_masked = x * mask_f
+        #     x_pool = x_masked.sum(dim=1) / mask_f.sum(dim=1).clamp(min=1)  # (B, E)
+        # else:
+        #     x_pool = x.mean(dim=1)
+
         # 5. Add CLS token and run class attention blocks
         cls_tokens = self.cls_token.expand(B, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)  # (B, N+1, Embed)
@@ -439,13 +462,24 @@ class ParticleTransformer(nn.Module):
         x = self.norm(x)
 
         # 6. Extract CLS token for classification
+        # cls_output = x[:, 0]
+        # outputs = {}
+        # outputs["classification"] = self.head(cls_output)
+        # if self.pt_head is not None:
+        #     outputs["pt"] = self.pt_head(x_pool)
+        # if self.quant_head is not None:
+        #     outputs["quantiles"] = self.quant_head(x_pool)
         cls_output = x[:, 0]
         outputs = {}
         outputs["classification"] = self.head(cls_output)
         if self.pt_head is not None:
-            pt_output = self.pt_head(torch.mean(x, dim=1))  # Global average pooling for regression head
+            pt_output = self.pt_head(
+                torch.mean(x, dim=1)
+            )  # Global average pooling for regression head
             outputs["pt"] = pt_output
         if self.quant_head is not None:
-            quant_output = self.quant_head(torch.mean(x, dim=1))  # Global average pooling for quantile regression head
+            quant_output = self.quant_head(
+                torch.mean(x, dim=1)
+            )  # Global average pooling for quantile regression head
             outputs["quantiles"] = quant_output
         return outputs
