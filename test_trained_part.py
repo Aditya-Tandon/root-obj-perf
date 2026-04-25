@@ -18,9 +18,19 @@ from typing import Tuple
 import numpy as np
 import torch
 import matplotlib
+import matplotlib.font_manager as fm
 
 matplotlib.use("Agg")  # non-interactive backend for saving plots
 import matplotlib.pyplot as plt
+
+# Add TimesNewRoman font
+font_path = os.path.expanduser("~/.local/share/fonts/times.ttf")
+if os.path.exists(font_path):
+    fm.fontManager.addfont(font_path)
+    print(f"Successfully registered: {font_path}")
+else:
+    print(f"Font file not found at: {font_path}")
+
 
 # ── Plotting defaults ──────────────────────────────────────────────
 plt.rcParams.update(
@@ -86,12 +96,19 @@ def parse_args():
             "full (standard + AK8 H-tag parity sections from notebook)."
         ),
     )
+    parser.add_argument(
+        "--till_dhh",
+        action="store_true",
+        help="Skip attention analysis. Performs analysis only up till di-Higgs reconstruction.",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     print(f"Execution profile: {args.profile}")
+
+    till_dhh = args.till_dhh
 
     # Load configs
     with open("hh-bbbb-obj-config.json", "r") as f:
@@ -418,17 +435,17 @@ def main():
         reg_pt = all_reg_pt
         print(f"\nRegression output (signal only):")
         print(
-            f"  reg_pt  range: {reg_pt[signal_mask].min():.2f} – {reg_pt[signal_mask].max():.2f}"
+            f"  Reg $p_T$  range: {reg_pt[signal_mask].min():.2f} – {reg_pt[signal_mask].max():.2f}"
         )
         print(
-            f"  jet_pt  range: {jet_pt[signal_mask].min():.2f} – {jet_pt[signal_mask].max():.2f}"
+            f"  Jet $p_T$  range: {jet_pt[signal_mask].min():.2f} – {jet_pt[signal_mask].max():.2f}"
         )
         print(
-            f"  gen_pt  range: {gen_pt[signal_mask].min():.2f} – {gen_pt[signal_mask].max():.2f}"
+            f"  Gen $p_T$  range: {gen_pt[signal_mask].min():.2f} – {gen_pt[signal_mask].max():.2f}"
         )
         correction = gen_pt[signal_mask] / (jet_pt[signal_mask] + 1e-9)
         print(
-            f"  Correction factor (gen_pt / jet_pt) range: {correction.min():.3f} – {correction.max():.3f}"
+            f"  Correction factor (gen $p_T$ / reco $p_T$) range: {correction.min():.3f} – {correction.max():.3f}"
         )
     else:
         print("\nNo regression head in this model.")
@@ -479,7 +496,7 @@ def main():
         correction, bins=60, range=(0, 3), histtype="step", density=True, color="C2"
     )
     ax.axvline(1.0, color="gray", linestyle="--", alpha=0.7, label="No correction")
-    ax.set_xlabel("gen $p_T$ / reco $p_T$")
+    ax.set_xlabel("Gen $p_T$ / Reco $p_T$")
     ax.set_ylabel("Density")
     ax.set_title("Target correction factor (signal)")
     ax.legend()
@@ -634,7 +651,7 @@ def main():
         label="Val Background",
     )
     ax.set_xlabel("Jet $p_T$ [GeV]")
-    ax.set_ylabel("Normalized Entries")
+    ax.set_ylabel("Normalised Entries")
     ax.set_title("Jet $p_T$ Distribution: Train vs Val")
     ax.legend()
     save_fig(fig, "train_vs_val_jet_pt")
@@ -661,7 +678,7 @@ def main():
         label="Reweighted Train Background",
     )
     ax.set_xlabel("Jet $p_T$ [GeV]")
-    ax.set_ylabel("Normalized Entries")
+    ax.set_ylabel("Normalised Entries")
     ax.set_title("Reweighted Jet $p_T$ Distribution: Train Set")
     ax.legend()
     save_fig(fig, "reweighted_train_jet_pt")
@@ -688,7 +705,7 @@ def main():
         label="Reweighted Train Background",
     )
     ax.set_xlabel("Jet $\\eta$")
-    ax.set_ylabel("Normalized Entries")
+    ax.set_ylabel("Normalised Entries")
     ax.set_title("Reweighted Jet $\\eta$ Distribution: Train Set")
     ax.legend()
     save_fig(fig, "reweighted_train_jet_eta")
@@ -1054,6 +1071,70 @@ def main():
     )
     print("\nPer-bin PR-AUC and optimal S/sqrt(B)")
     print(df_pr_srb.to_string())
+
+    # ============================================================
+    # CACHE: Save all validation outputs for offline ROC plotting
+    # Produces {plot_dir}/val_output_cached.npz.
+    # Load this in any notebook to plot or compare ROC curves without
+    # re-running model inference.
+    # ============================================================
+    import os
+    import numpy as np
+
+    # Mirror the plot_dir formula from cell 13 so this cell is self-contained.
+    _run_id = config_part.get("exp_name", "unknown_run").replace("/", "_")
+    _art_name = CONFIG_PART.get("wandb", {}).get("artifact_name", "unknown_artifact")
+    _art_type = CONFIG_PART.get("wandb", {}).get("ckpt_type", "unknown_type")
+    _plot_dir = f"../Updates/plots_{_run_id}/{_art_name}:{_art_type}"
+    os.makedirs(_plot_dir, exist_ok=True)
+
+    _model_label = config_part.get("exp_name", "trained_model")
+    _cache_path = os.path.join(_plot_dir, "val_output_cached.npz")
+
+    # --- Flatten reference-tagger ROC curves into named arrays ---
+    # ref_roc_results: {label: (fpr, tpr, auc_score, thresholds)}
+    _ref_arrays = {}
+    _ref_labels = list(ref_roc_results.keys())
+    for _lbl, (_fpr, _tpr, _auc, _thr) in ref_roc_results.items():
+        _k = _lbl.replace(" ", "_")
+        _ref_arrays[f"ref_{_k}_fpr"] = np.asarray(_fpr, dtype=np.float32)
+        _ref_arrays[f"ref_{_k}_tpr"] = np.asarray(_tpr, dtype=np.float32)
+        _ref_arrays[f"ref_{_k}_auc"] = np.array(_auc, dtype=np.float64)
+        _ref_arrays[f"ref_{_k}_thresholds"] = np.asarray(_thr, dtype=np.float32)
+
+    np.savez_compressed(
+        _cache_path,
+        # ── Metadata ───────────────────────────────────────────────────────────
+        model_label=np.array(_model_label),
+        eval_weight_mode=np.array(eval_weight_mode),
+        ref_tagger_mode=np.array(ref_tagger_mode),
+        cache_pt_cut_gev=np.array(
+            cache_pt_cut_gev if cache_pt_cut_gev is not None else np.nan
+        ),
+        ref_tagger_labels=np.array(_ref_labels),  # ordered list of ref-tagger names
+        # ── Raw per-jet validation arrays (allow ROC recomputation) ───────────
+        trained_scores=np.asarray(trained_scores, dtype=np.float32),
+        trained_labels=np.asarray(trained_labels, dtype=np.int8),
+        roc_weights=np.asarray(roc_weights, dtype=np.float32),
+        trained_qcd_w_raw=np.asarray(trained_qcd_w_raw, dtype=np.float64),
+        # ── Jet kinematics after cuts (for efficiency tables & binned plots) ──
+        jet_pt=np.asarray(val_jet_pt[val_cuts_mask], dtype=np.float32),
+        jet_eta=np.asarray(val_jet_eta[val_cuts_mask], dtype=np.float32),
+        # ── Pre-computed trained-model ROC curve ──────────────────────────────
+        part_fpr=np.asarray(fpr, dtype=np.float32),
+        part_tpr=np.asarray(tpr, dtype=np.float32),
+        part_auc=np.array(roc_auc, dtype=np.float64),
+        part_thresholds=np.asarray(thresholds, dtype=np.float32),
+        # ── Pre-computed reference-tagger ROC curves ──────────────────────────
+        **_ref_arrays,
+    )
+    print(f"Saved → {_cache_path}")
+    print(f"  model : '{_model_label}'  |  weight mode : {eval_weight_mode}")
+    print(
+        f"  Trained ParT AUC : {roc_auc:.4f}  |  n_jets : {len(trained_scores):,}"
+    )
+    for _lbl, (_, _, _auc_v, _) in ref_roc_results.items():
+        print(f"  {_lbl:20s} AUC : {_auc_v:.4f}")
 
     # Notebook parity (Cell 11): compare PR and significance across weighting modes.
     modes_to_compare = ["unweighted", "qcd_only", "full_physics"]
@@ -1626,8 +1707,8 @@ def main():
         cbar_kws={"label": "AUC"},
     )
     ax.set_xlabel(r"$|\eta|$")
-    ax.set_ylabel("Jet pT [GeV]")
-    ax.set_title(r"Trained ParT: AUC in pT vs $|\eta|$ Bins")
+    ax.set_ylabel("Jet $p_T$ [GeV]")
+    ax.set_title(r"Trained ParT: AUC in $p_T$ vs $|\eta|$ Bins")
     plt.tight_layout()
     save_fig(fig, "auc_heatmap_pt_eta")
     plt.close(fig)
@@ -1673,9 +1754,9 @@ def main():
         annot_kws={"fontsize": 9},
     )
     ax_unc.set_xlabel(r"$|\eta|$")
-    ax_unc.set_ylabel("Jet pT [GeV]")
+    ax_unc.set_ylabel("Jet $p_T$ [GeV]")
     ax_unc.set_title(
-        r"Trained ParT: AUC with Bootstrap Uncertainty in pT vs $|\eta|$ Bins"
+        r"Trained ParT: AUC with Bootstrap Uncertainty in $p_T$ vs $|\eta|$ Bins"
     )
     plt.tight_layout()
     save_fig(fig_unc, "auc_heatmap_pt_eta_uncertainty")
@@ -1738,7 +1819,7 @@ def main():
                     bins=50,
                     range=(lo, hi),
                     histtype="step",
-                    label="Signal (b-jets)",
+                    label="Signal ($b$-jets)",
                     color="blue",
                     density=True,
                 )
@@ -1811,7 +1892,7 @@ def main():
             ax_all.set_ylabel("Density")
             ax_all.legend(fontsize="small")
 
-            ax_sig.set_title(f"{feat_name} - Signal (b-jets), by Particle Type")
+            ax_sig.set_title(f"{feat_name} - Signal ($b$-jets), by Particle Type")
             ax_sig.set_xlabel(f"Constituent {feat_name}")
             ax_sig.set_ylabel("Density")
             ax_sig.legend(fontsize="small")
@@ -2197,7 +2278,7 @@ def main():
         correction_reg, bins=60, range=(0, 3), histtype="step", density=True, color="C2"
     )
     ax.axvline(1.0, color="gray", linestyle="--", alpha=0.7, label="No correction")
-    ax.set_xlabel("gen $p_T$ / reco $p_T$")
+    ax.set_xlabel("Gen $p_T$ / Reco $p_T$")
     ax.set_ylabel("Density")
     ax.set_title("Target correction factor (signal)")
     ax.legend()
@@ -2426,7 +2507,7 @@ def main():
             linewidth=1.5,
         )
     ax.axvline(1.0, color="gray", linestyle="--", alpha=0.7, label="Ideal (1.0)")
-    ax.set_xlabel("$p_T$ Response (reco $p_T$ / gen $p_T$)")
+    ax.set_xlabel("$p_T$ Response (Reco $p_T$ / Gen $p_T$)")
     ax.set_ylabel("Density")
     ax.set_title("Jet $p_T$ Response Distribution (Signal Jets)")
     ax.legend()
@@ -2451,7 +2532,7 @@ def main():
     ax.axvline(1.0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xlabel("$p_T$ Response")
     ax.set_ylabel("Density")
-    ax.set_title("$p_T$ Response in gen $p_T$ Bins")
+    ax.set_title("$p_T$ Response in Gen $p_T$ Bins")
     ax.legend(fontsize="x-small", ncol=1)
     ax.set_xlim(0, 2)
 
@@ -2477,7 +2558,7 @@ def main():
     ax.axvline(1.0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xlabel("$p_T$ Response")
     ax.set_ylabel("Density")
-    ax.set_title("$p_T$ Response in gen $p_T$ Bins")
+    ax.set_title("$p_T$ Response in Gen $p_T$ Bins")
     ax.legend(fontsize="x-small", ncol=1)
     ax.set_xlim(0, 2)
     plt.tight_layout()
@@ -2724,7 +2805,7 @@ def main():
                 "C0--",
                 label=f"$\\mu$={mu_r:.3f}, $\\sigma$={abs(sig_r):.3f}",
             )
-        ax.set_title(f"gen $p_T$ [{pt_lo},{pt_hi}) GeV\n(Uncorrected)")
+        ax.set_title(f"Gen $p_T$ [{pt_lo},{pt_hi}) GeV\n(Uncorrected)")
         ax.set_xlabel("$p_T$ Response")
         ax.set_ylabel("Counts")
         ax.legend(fontsize="x-small")
@@ -2745,7 +2826,7 @@ def main():
                     "C1--",
                     label=f"$\\mu$={mu_c:.3f}, $\\sigma$={abs(sig_c):.3f}",
                 )
-            ax.set_title(f"gen $p_T$ [{pt_lo},{pt_hi}) GeV\n(Corrected)")
+            ax.set_title(f"Gen $p_T$ [{pt_lo},{pt_hi}) GeV\n(Corrected)")
         else:
             ax.text(
                 0.5,
@@ -2757,7 +2838,7 @@ def main():
             )
         ax.set_xlabel("$p_T$ Response")
         ax.set_ylabel("Counts")
-        ax.legend(fontsize="x-small")
+        ax.legend(fontsize="small")
 
     plt.tight_layout()
     save_fig(fig, "response_gaussian_fits_pt_slices")
@@ -2856,6 +2937,56 @@ def main():
         print("Skipping absolute resolution plots (no quantile regression head).")
 
     print(f"\nAll resolution plots saved to: {plot_dir}")
+
+    # ============================================================
+    # CACHE: Save scale/resolution results for read-data.ipynb comparison
+    # Run this cell after the resolution computation above (cell 25).
+    # ============================================================
+    _model_label = config_part.get("exp_name", "trained_model")
+
+    _cache_path = os.path.join(plot_dir, "trained_model_resolution_cache.npz")
+    print(f"Saving resolution cache to: {_cache_path}")
+
+    np.savez_compressed(
+        _cache_path,
+        # Metadata
+        model_label=np.array(_model_label),
+        has_regression=np.array(has_regression),
+        has_quantile=np.array(has_quantile),
+        # Bin centers
+        bc_pt=bc_pt,
+        bc_eta=bc_eta,
+        # Uncorrected (raw reco pT / gen pT): scale and resolution vs pT
+        mu_raw_pt=mu_raw_pt,
+        mu_raw_pt_err=mu_raw_pt_err,
+        sig_raw_pt=sig_raw_pt,
+        sig_raw_pt_err=sig_raw_pt_err,
+        # Corrected (regression head) vs pT — NaN if no regression head
+        mu_corr_pt=mu_corr_pt if has_regression else np.full_like(bc_pt, np.nan),
+        mu_corr_pt_err=mu_corr_pt_err if has_regression else np.zeros_like(bc_pt),
+        sig_corr_pt=sig_corr_pt if has_regression else np.full_like(bc_pt, np.nan),
+        sig_corr_pt_err=sig_corr_pt_err if has_regression else np.zeros_like(bc_pt),
+        # Uncorrected vs eta
+        mu_raw_eta=mu_raw_eta,
+        mu_raw_eta_err=mu_raw_eta_err,
+        sig_raw_eta=sig_raw_eta,
+        sig_raw_eta_err=sig_raw_eta_err,
+        # Corrected vs eta — NaN if no regression head
+        mu_corr_eta=mu_corr_eta if has_regression else np.full_like(bc_eta, np.nan),
+        mu_corr_eta_err=mu_corr_eta_err if has_regression else np.zeros_like(bc_eta),
+        sig_corr_eta=sig_corr_eta if has_regression else np.full_like(bc_eta, np.nan),
+        sig_corr_eta_err=sig_corr_eta_err if has_regression else np.zeros_like(bc_eta),
+        # Quantile-predicted resolution — NaN if no quantile head
+        pred_res_vs_pt=pred_res_vs_pt if has_quantile else np.full_like(bc_pt, np.nan),
+        pred_res_vs_pt_err=pred_res_vs_pt_err if has_quantile else np.zeros_like(bc_pt),
+        pred_res_vs_eta=(
+            pred_res_vs_eta if has_quantile else np.full_like(bc_eta, np.nan)
+        ),
+        pred_res_vs_eta_err=(
+            pred_res_vs_eta_err if has_quantile else np.zeros_like(bc_eta)
+        ),
+    )
+    print(f"Saved resolution cache → {_cache_path}  (label='{_model_label}')")
 
     # ── Cell 22: Di-Higgs mass reconstruction with trained ParT ──────
     import fastjet
@@ -3199,6 +3330,8 @@ def main():
         _sig_pair_ok[_sig_is_pure] = ak.to_numpy(match_direct)
         _sig_pair_sw[_sig_is_pure] = ak.to_numpy(match_swapped)
 
+    # Signal raw arrays are already computed in one pass above.
+
     _n_pure_all = int(_sig_is_pure.sum())
     _pair_eff_all = float(_sig_pair_ok[_sig_is_pure].mean()) if _n_pure_all > 0 else 0.0
     _pair_sw_all = float(_sig_pair_sw[_sig_is_pure].mean()) if _n_pure_all > 0 else 0.0
@@ -3311,12 +3444,74 @@ def main():
         print("\nNo QCD background events found!")
 
     # Notebook parity Phase 2: significance sweep and WP selection after matching.
+    _qcd_min_btag = (
+        np.concatenate(_qcd_min_btag_list) if _qcd_min_btag_list else np.array([])
+    )
     _sig_lead_m = ak.to_numpy(sig_lead_all.mass) if n_sig_4jet > 0 else np.array([])
     _sig_sub_m = ak.to_numpy(sig_sub_all.mass) if n_sig_4jet > 0 else np.array([])
     _qcd_lead_m = (
         ak.to_numpy(qcd_lead_all.mass) if n_qcd_4jet_total > 0 else np.array([])
     )
     _qcd_sub_m = ak.to_numpy(qcd_sub_all.mass) if n_qcd_4jet_total > 0 else np.array([])
+    _qcd_hh_m = ak.to_numpy(qcd_hh_all.mass) if n_qcd_4jet_total > 0 else np.array([])
+    _qcd_weights = _qcd_weights_raw if n_qcd_4jet_total > 0 else np.array([])
+
+    # Enforce notebook-parity shape contracts before caching.
+    _n_sig = len(_sig_min_btag)
+    _n_qcd = len(_qcd_min_btag)
+    if not (
+        len(_sig_lead_m)
+        == len(_sig_sub_m)
+        == len(_sig_hh_m)
+        == len(_sig_is_pure)
+        == len(_sig_pair_ok)
+        == len(_sig_pair_sw)
+        == _n_sig
+    ):
+        raise ValueError(
+            "Signal dh_raw array length mismatch: "
+            f"min_btag={_n_sig}, lead={len(_sig_lead_m)}, sub={len(_sig_sub_m)}, "
+            f"hh={len(_sig_hh_m)}, pure={len(_sig_is_pure)}, "
+            f"pair_ok={len(_sig_pair_ok)}, pair_swap={len(_sig_pair_sw)}"
+        )
+    if not (
+        len(_qcd_lead_m)
+        == len(_qcd_sub_m)
+        == len(_qcd_hh_m)
+        == len(_qcd_weights)
+        == _n_qcd
+    ):
+        raise ValueError(
+            "QCD dh_raw array length mismatch: "
+            f"min_btag={_n_qcd}, lead={len(_qcd_lead_m)}, sub={len(_qcd_sub_m)}, "
+            f"hh={len(_qcd_hh_m)}, weights={len(_qcd_weights)}"
+        )
+
+    # ============================================================
+    # Store raw pre-clustered data — used by the next cell
+    # ============================================================
+    dh_raw = {
+        # Signal
+        "sig_min_btag": _sig_min_btag,  # min btag of 4th jet, per event with ≥4 jets
+        "sig_lead_m": _sig_lead_m,
+        "sig_sub_m": _sig_sub_m,
+        "sig_hh_m": _sig_hh_m,
+        "sig_is_pure": _sig_is_pure,  # all 4 jets gen-matched
+        "sig_pair_ok": _sig_pair_ok,  # True: pure + algorithm correct
+        "sig_pair_swap": _sig_pair_sw,  # True: pure + algorithm correct (h1/h2 swapped)
+        # QCD
+        "qcd_min_btag": _qcd_min_btag,
+        "qcd_lead_m": _qcd_lead_m,
+        "qcd_sub_m": _qcd_sub_m,
+        "qcd_hh_m": _qcd_hh_m,
+        "qcd_weights": _qcd_weights,  # raw σ_bin (Convention C)
+        # Metadata
+        "sigma_to_ngen": sigma_to_ngen,
+        "collection_key": collection_key,
+        "has_reg": has_reg,
+        "n_sig_events_loaded": n_sig_4jet,
+        "n_qcd_scanned": n_qcd_events_processed,
+    }
 
     R_HH_CUT = 55.0
     N_CUTS = 100
@@ -3478,7 +3673,6 @@ def main():
         "pair_eff": float(pair_eff),
         "eff_swapped": float(eff_swapped),
     }
-
     print(f"\n{'='*60}")
     print(f"Di-Higgs reconstruction complete")
     print(f"  Collection: {collection_key} ({dataset_used})")
@@ -3488,7 +3682,7 @@ def main():
         f"{n_total/max(n_sig_4jet,1)*100:.2f}% of {n_sig_4jet} pre-threshold 4-jet events"
     )
     print(
-        f"  Signal (all 4 pure, above threshold): {n_signal} events ({n_signal/max(n_total,1)*100:.1f}%)"
+        f"  Signal (all 4 pure, above threshold): {n_signal} events ({n_signal/max(n_total,1)*100:.1f}%))"
     )
     print(
         f"  QCD background: {n_qcd} events (from {n_qcd_events_processed} QCD events processed)"
@@ -3992,6 +4186,104 @@ def main():
     print(f"Collection: {res['collection_key']}")
     print(f"\nAll di-Higgs plots saved to: {plot_dir}")
 
+    # ============================================================
+    # CACHE: Save paired di-Higgs candidate data for offline plotting
+    # Run after the WP-sweep cell (cell 35). Saves both:
+    #   - dh_raw arrays (pre-WP): lets you re-run the WP sweep offline
+    #   - part_dihiggs_result arrays (WP-filtered): ready for direct plotting
+    #
+    # Output: plot_dir/dihiggs_result_{collection_key}_{WP_SELECTION}.npz
+    #
+    # To reload in another notebook:
+    #   c = np.load(path, allow_pickle=False)
+    #   sigma_to_ngen = dict(zip(c["sigma_to_ngen_keys"], c["sigma_to_ngen_vals"]))
+    #   # Raw dh_raw-style dict:
+    #   dh_raw_loaded = {k: c[k] for k in ["sig_min_btag","sig_lead_m","sig_sub_m",
+    #       "sig_hh_m","sig_is_pure","sig_pair_ok","sig_pair_swap",
+    #       "qcd_min_btag","qcd_lead_m","qcd_sub_m","qcd_hh_m"]}
+    #   dh_raw_loaded["qcd_weights"] = c["qcd_weights_raw"]
+    #   dh_raw_loaded["sigma_to_ngen"] = sigma_to_ngen
+    #   # WP-filtered numpy arrays (no awkward needed):
+    #   sig_lead_m = c["sig_lead_m_wp"]; sig_sub_m = c["sig_sub_m_wp"]
+    #   qcd_lead_m = c["qcd_lead_m_wp"]; qcd_weights_raw = c["qcd_weights_wp"]
+    # ============================================================
+    import os
+    import numpy as np
+
+    _res = part_dihiggs_result
+    _cache_fname = f"dihiggs_result_{collection_key}_{WP_SELECTION}.npz"
+    _cache_path = os.path.join(plot_dir, _cache_fname)
+    print(f"Saving di-Higgs cache → {_cache_path}")
+
+    _s2n_keys = np.array(list(dh_raw["sigma_to_ngen"].keys()), dtype=np.float64)
+    _s2n_vals = np.array(list(dh_raw["sigma_to_ngen"].values()), dtype=np.float64)
+
+    np.savez_compressed(
+        _cache_path,
+        # ── Metadata ──────────────────────────────────────────────────────────────
+        collection_key=np.array(collection_key),
+        wp_selection=np.array(WP_SELECTION),
+        threshold=np.array(PART_BTAG_THRESHOLD),
+        has_regression=np.array(dh_raw["has_reg"]),
+        apply_pt_correction=np.array(apply_pt_correction),
+        model_label=np.array(config_part.get("exp_name", "trained_model")),
+        luminosity_fb=np.array(LUMINOSITY_FB),
+        signal_xsec_pb=np.array(SIGNAL_XSEC_PB),
+        n_gen_signal=np.array(N_GEN_SIGNAL),
+        r_hh_cut=np.array(R_HH_CUT),
+        n_sig_events_loaded=np.array(dh_raw["n_sig_events_loaded"]),
+        n_qcd_scanned=np.array(dh_raw["n_qcd_scanned"]),
+        # sigma_to_ngen serialised as parallel arrays (no pickle needed)
+        sigma_to_ngen_keys=_s2n_keys,
+        sigma_to_ngen_vals=_s2n_vals,
+        pair_eff=np.array(_res["pair_eff"]),
+        eff_swapped=np.array(_res["eff_swapped"]),
+        # ── Raw per-event arrays from dh_raw (pre-WP) — needed for WP sweep ──────
+        sig_min_btag=dh_raw["sig_min_btag"],
+        sig_lead_m=dh_raw["sig_lead_m"],
+        sig_sub_m=dh_raw["sig_sub_m"],
+        sig_hh_m=dh_raw["sig_hh_m"],
+        sig_is_pure=dh_raw["sig_is_pure"],
+        sig_pair_ok=dh_raw["sig_pair_ok"],
+        sig_pair_swap=dh_raw["sig_pair_swap"],
+        qcd_min_btag=dh_raw["qcd_min_btag"],
+        qcd_lead_m=dh_raw["qcd_lead_m"],
+        qcd_sub_m=dh_raw["qcd_sub_m"],
+        qcd_hh_m=dh_raw["qcd_hh_m"],
+        qcd_weights_raw=dh_raw["qcd_weights"],  # raw σ_bin (Convention C)
+        # ── WP-filtered arrays from part_dihiggs_result — ready for plotting ──────
+        sig_lead_m_wp=ak.to_numpy(_res["sig_lead"].mass),
+        sig_sub_m_wp=ak.to_numpy(_res["sig_sub"].mass),
+        sig_hh_m_wp=ak.to_numpy(_res["sig_hh"].mass),
+        qcd_lead_m_wp=ak.to_numpy(_res["qcd_lead"].mass),
+        qcd_sub_m_wp=ak.to_numpy(_res["qcd_sub"].mass),
+        qcd_hh_m_wp=ak.to_numpy(_res["qcd_hh"].mass),
+        qcd_weights_wp=_res["qcd_weights"],  # raw σ_bin filtered at WP
+        n_signal=np.array(_res["n_signal"]),
+        n_qcd=np.array(_res["n_qcd"]),
+        n_total=np.array(_res["n_total"]),
+    )
+
+    print(f"Saved: {_cache_path}")
+    print(
+        f"  Raw signal events  : {len(dh_raw['sig_min_btag']):,}  (pre-WP, all ≥4 jets)"
+    )
+    print(
+        f"  Raw QCD events     : {len(dh_raw['qcd_min_btag']):,}  (pre-WP, all ≥4 jets)"
+    )
+    print(
+        f"  Signal @ WP        : {_res['n_signal']:,}  (pure, threshold={PART_BTAG_THRESHOLD:.4f})"
+    )
+    print(f"  QCD @ WP           : {_res['n_qcd']:,}")
+    print(
+        f"  Pair efficiency    : {_res['pair_eff']:.2%}  (+swap {_res['eff_swapped']:.2%})"
+    )
+
+    if till_dhh:
+        print(
+            "Paireed di-Higgs reconstruction complete. Skipping attention analysis as requested."
+        )
+
     # ── Cell 25: Attention map visualization & pairwise feature analysis ──
     import torch.nn as nn
     from evaluation.attention import (
@@ -4006,7 +4298,7 @@ def main():
     print("ATTENTION & PAIRWISE FEATURE ANALYSIS")
     print("=" * 60)
 
-    n_samples_attn = 5
+    n_samples_attn = 10
     signal_indices_attn = np.where(all_labels == 1)[0][:n_samples_attn]
     background_indices_attn = np.where(all_labels == 0)[0][:n_samples_attn]
     sample_indices_attn = np.concatenate([signal_indices_attn, background_indices_attn])
@@ -4026,7 +4318,7 @@ def main():
 
     # Pairwise feature distributions
     print("\nComputing pairwise features on full validation set...")
-    n_jets_for_dist = min(1000, len(all_constituents))
+    n_jets_for_dist = min(2000, len(all_constituents))
     dist_x = all_constituents[:n_jets_for_dist]
     dist_mask = dist_x[:, :, 1] > 0
     dist_labels = all_labels[:n_jets_for_dist]
@@ -4232,7 +4524,7 @@ def main():
         plt.close(fig)
 
     # Average attention patterns
-    n_avg = min(100, len(all_constituents))
+    n_avg = min(2000, len(all_constituents))
     avg_x = all_constituents[:n_avg].float().to(device)
     avg_mask = avg_x[:, :, 1] > 0
     avg_labels_attn = all_labels[:n_avg]
@@ -5066,6 +5358,70 @@ def main():
         plt.tight_layout()
         save_fig(fig, "constituent_tsne_by_particle_type")
         plt.close(fig)
+        tsne_3d = TSNE(n_components=3, random_state=42, perplexity=min(30, n_tsne // 4))
+        tsne_result = tsne_3d.fit_transform(embed_sub)
+
+        fig = plt.figure()
+        ax1 = fig.add_subplot(projection="3d")
+
+        # Left: colored by particle type
+        for pid in range(N_PARTICLE_TYPES):
+            pmask = ptype_sub == pid
+            if pmask.sum() == 0:
+                continue
+            ax1.scatter(
+                tsne_result[pmask, 0],
+                tsne_result[pmask, 1],
+                tsne_result[pmask, 2],
+                c=PARTICLE_TYPE_COLORS[pid],
+                alpha=0.3,
+                s=5,
+                label=PARTICLE_TYPE_NAMES[pid],
+            )
+        ax1.set_xlabel("t-SNE 1")
+        ax1.set_ylabel("t-SNE 2")
+        ax1.set_zlabel("t-SNE 3")
+        ax1.set_title("Per-Constituent Embedding — by Particle Type")
+        ax1.legend(markerscale=5, fontsize=9)
+        save_fig(fig, "constituent_tsne_by_particle_type_3d")
+        plt.show()
+
+        # Right: colored by jet class
+        fig = plt.figure()
+        ax2 = fig.add_subplot(projection="3d")
+        ax2.scatter(
+            tsne_result[label_sub == 0, 0],
+            tsne_result[label_sub == 0, 1],
+            tsne_result[label_sub == 0, 2],
+            c="red",
+            alpha=0.3,
+            s=5,
+            label="Background",
+        )
+        ax2.scatter(
+            tsne_result[label_sub == 1, 0],
+            tsne_result[label_sub == 1, 1],
+            tsne_result[label_sub == 1, 2],
+            c="blue",
+            alpha=0.3,
+            s=5,
+            label="Signal",
+        )
+        ax2.set_xlabel("t-SNE 1")
+        ax2.set_ylabel("t-SNE 2")
+        ax2.set_zlabel("t-SNE 3")
+        ax2.set_title("Per-Constituent Embedding — by Jet Class")
+        ax2.legend(markerscale=5, fontsize=9)
+
+        # plt.title("t-SNE of Per-Constituent Representations (Final Particle Attention Layer)", fontsize=13)
+        plt.tight_layout()
+        save_fig(fig, "constituent_tsne_by_particle_type_3d_dist_by_sig")
+        plt.show()
+
+        tsne_dict = {"results": tsne_result, "ptypes": ptype_sub, "labels": label_sub}
+        tsne_res_path = os.path.join(plot_dir, "tsne_res.npz")
+        np.savez_compressed(tsne_res_path, **tsne_dict)
+        print(f"Saved raw t-SNE results to: {tsne_res_path}")
 
         del embed_all, embed_list, embed_sub, tsne_result
         gc.collect()
@@ -5079,411 +5435,539 @@ def main():
     from sklearn.metrics import roc_auc_score as roc_auc_score_fi
     from scipy.stats import ks_2samp
 
-    print("=" * 60)
-    print("FEATURE IMPORTANCE ANALYSIS")
-    print("=" * 60)
+    print("=" * 90)
+    print(
+        "FEATURE IMPORTANCE (STRATIFIED + ROC-CONSISTENT WEIGHTS + CLASS-CONDITIONAL PERM)"
+    )
+    print("=" * 90)
 
+    # Config
+    SEED = 42
+    N_SUBSET_TARGET = 5000
+    N_PERMUTATIONS = 5
+    N_GRAD_SAMPLES = 800
+    N_PLOT_FEATURES_MAX = 12
+    N_KS_SUBSAMPLE = 10000
+    rng = np.random.default_rng(SEED)
+
+    # Feature names
     input_feature_names = [
         "Mass",
-        "pT",
+        "p_T",
         "η",
         "φ",
-        "d_xy",
+        "d_{xy}",
         "z_0",
         "Charge",
         "log(pT_rel)",
-        "Δη",
-        "Δφ",
+        "dη",
+        "dφ",
         "PUPPI weight",
-        "log(ΔR)",
+        "log(dR)",
     ]
-    n_features_fi = all_constituents.shape[2]
-    if n_features_fi > 12:
-        for i_fi in range(12, n_features_fi):
-            input_feature_names.append(f"ParticleID_{i_fi-11}")
-    print(f"Analyzing {len(input_feature_names)} input features")
+    n_total_features = int(all_constituents.shape[2])
+    if n_total_features > 12:
+        for i in range(12, n_total_features):
+            input_feature_names.append(f"ParticleID_{i-11}")
 
-    # 1. Gradient-based feature importance
-    print("\n1. Computing gradient-based feature importance...")
-    n_grad_samples = min(500, len(all_constituents))
-    grad_x = all_constituents[:n_grad_samples].clone().float().to(device)
-    grad_x.requires_grad_(True)
-    grad_mask = grad_x[:, :, 1] > 0
-    grad_labels = all_labels[:n_grad_samples]
-    model.eval()
-    tmep_outputs = model(grad_x, particle_mask=grad_mask)
-    outputs_fi = tmep_outputs["classification"]
-    grad_x.grad = None
-    loss_signal = outputs_fi.sum()
-    loss_signal.backward(retain_graph=True)
-    grads_signal = grad_x.grad.clone().detach().cpu()
-
-    grad_x.grad = None
-    grad_x.requires_grad_(True)
-    tmep_outputs = model(grad_x, particle_mask=grad_mask)
-    outputs_fi = tmep_outputs["classification"]
-    probs_fi = torch.sigmoid(outputs_fi)
-    probs_fi.sum().backward()
-    grads_prob = grad_x.grad.clone().detach().cpu()
-
-    mask_np_fi = grad_mask.cpu().numpy()
-    grad_importance = np.zeros(len(input_feature_names))
-    grad_importance_signal = np.zeros(len(input_feature_names))
-    grad_importance_background = np.zeros(len(input_feature_names))
-
-    for feat_idx in range(min(len(input_feature_names), grads_prob.shape[2])):
-        valid_grads, sig_grads, bkg_grads = [], [], []
-        for i in range(n_grad_samples):
-            n_valid = int(mask_np_fi[i].sum())
-            feat_grads = np.abs(grads_prob[i, :n_valid, feat_idx].numpy())
-            valid_grads.extend(feat_grads)
-            if grad_labels[i] == 1:
-                sig_grads.extend(feat_grads)
-            else:
-                bkg_grads.extend(feat_grads)
-        grad_importance[feat_idx] = np.mean(valid_grads)
-        grad_importance_signal[feat_idx] = np.mean(sig_grads) if sig_grads else 0
-        grad_importance_background[feat_idx] = np.mean(bkg_grads) if bkg_grads else 0
-    grad_importance = grad_importance / grad_importance.sum()
-    grad_importance_signal = grad_importance_signal / grad_importance_signal.sum()
-    grad_importance_background = (
-        grad_importance_background / grad_importance_background.sum()
+    # Build analysis sample + weights
+    labels_full = np.asarray(all_labels).astype(int).reshape(-1)
+    use_post_cut = (
+        "roc_weights" in locals()
+        and "all_labels_after_cuts" in locals()
+        and "val_cuts_mask" in locals()
+        and len(labels_full) == len(val_cuts_mask)
     )
 
-    # 2. Permutation importance
-    print("2. Computing permutation importance (this may take a minute)...")
-    n_perm_samples = min(1000, len(all_constituents))
-    perm_x = all_constituents[:n_perm_samples].float().to(device)
-    perm_mask = perm_x[:, :, 1] > 0
-    perm_labels = all_labels[:n_perm_samples]
-    if "roc_weights" in locals() and len(roc_weights) >= n_perm_samples:
-        perm_weights = np.asarray(roc_weights[:n_perm_samples], dtype=np.float64)
-    elif (
-        "all_qcd_weights_val" in locals() and len(all_qcd_weights_val) >= n_perm_samples
-    ):
-        perm_weights = np.asarray(
-            all_qcd_weights_val[:n_perm_samples], dtype=np.float64
-        )
+    if use_post_cut:
+        if isinstance(val_cuts_mask, torch.Tensor):
+            cut_mask_np = val_cuts_mask.detach().cpu().numpy().astype(bool)
+        else:
+            cut_mask_np = np.asarray(val_cuts_mask).astype(bool)
+        x_full = all_constituents[torch.from_numpy(cut_mask_np)]
+        y_full = np.asarray(all_labels_after_cuts).astype(int).reshape(-1)
+        w_full = np.asarray(roc_weights).reshape(-1).astype(np.float64)
+        print("Using post-cut sample with roc_weights (ROC-consistent)")
     else:
-        perm_weights = np.ones(n_perm_samples, dtype=np.float64)
+        x_full = all_constituents
+        y_full = labels_full
+        w_full = np.asarray(all_qcd_weights_val).reshape(-1).astype(np.float64)
+        print("Using full validation sample with all_qcd_weights_val")
+
+    if len(x_full) != len(y_full):
+        raise ValueError(f"Length mismatch: len(x)={len(x_full)}, len(y)={len(y_full)}")
+    if len(w_full) != len(y_full):
+        raise ValueError(f"Length mismatch: len(w)={len(w_full)}, len(y)={len(y_full)}")
+
+    # Stratified random subset
+    sig_idx = np.where(y_full == 1)[0]
+    bkg_idx = np.where(y_full == 0)[0]
+    if len(sig_idx) == 0 or len(bkg_idx) == 0:
+        raise RuntimeError("Need both classes in analysis sample.")
+
+    n_subset = min(N_SUBSET_TARGET, len(y_full))
+    n_sig = int(round(n_subset * len(sig_idx) / len(y_full)))
+    n_sig = max(1, min(n_sig, len(sig_idx), n_subset - 1))
+    n_bkg = min(n_subset - n_sig, len(bkg_idx))
+    if n_bkg < 1:
+        n_bkg = 1
+        n_sig = min(n_subset - 1, len(sig_idx))
+
+    subset_idx = np.concatenate(
+        [
+            rng.choice(sig_idx, size=n_sig, replace=False),
+            rng.choice(bkg_idx, size=n_bkg, replace=False),
+        ]
+    )
+    rng.shuffle(subset_idx)
+
+    subset_idx_t = torch.from_numpy(subset_idx).long()
+    perm_x = x_full[subset_idx_t].float().to(device)
+    perm_labels = y_full[subset_idx]
+    perm_weights = w_full[subset_idx].astype(np.float64)
+    perm_mask = perm_x[:, :, 1] > 0
+
+    w_sum = float(np.sum(perm_weights))
+    w2_sum = float(np.sum(np.square(perm_weights)))
+    n_eff = (w_sum * w_sum / max(w2_sum, 1e-12)) if w2_sum > 0 else 0.0
+    print(
+        f"Subset: n={len(perm_labels)}, sig={(perm_labels==1).sum()}, bkg={(perm_labels==0).sum()}, n_eff~{n_eff:.1f}"
+    )
+
+    # Baseline AUC
     model.eval()
     with torch.no_grad():
-        tmep_outputs = model(perm_x, particle_mask=perm_mask)
-        baseline_outputs_fi = (
-            torch.sigmoid(tmep_outputs["classification"]).squeeze().cpu().numpy()
-        )
-    baseline_auc = roc_auc_score_fi(
-        perm_labels, baseline_outputs_fi, sample_weight=perm_weights
-    )
-    print(f"  Baseline AUC: {baseline_auc:.4f}")
+        baseline_logits = model(perm_x, particle_mask=perm_mask)["classification"]
+        baseline_scores = torch.sigmoid(baseline_logits).squeeze().detach().cpu().numpy()
+    baseline_auc = roc_auc_score_fi(perm_labels, baseline_scores, sample_weight=perm_weights)
+    print(f"Baseline weighted AUC: {baseline_auc:.4f}")
 
-    perm_importance = np.zeros(len(input_feature_names))
-    n_permutations = 5
-    for feat_idx in range(min(len(input_feature_names), perm_x.shape[2])):
-        auc_drops = []
-        for _ in range(n_permutations):
-            perm_x_copy = perm_x.clone()
-            perm_indices = torch.randperm(n_perm_samples)
-            perm_x_copy[:, :, feat_idx] = perm_x[perm_indices, :, feat_idx]
+    n_features = min(len(input_feature_names), perm_x.shape[2])
+
+    # 1) Gradient importance (corrected sample)
+    n_grad = min(N_GRAD_SAMPLES, len(perm_x))
+    grad_x = perm_x[:n_grad].clone().detach().requires_grad_(True)
+    grad_labels = perm_labels[:n_grad]
+    grad_mask = grad_x[:, :, 1] > 0
+
+    grad_x.grad = None
+    out = model(grad_x, particle_mask=grad_mask)["classification"]
+    torch.sigmoid(out).sum().backward()
+    grads = grad_x.grad.detach().cpu().numpy()
+    mask_np = grad_mask.detach().cpu().numpy()
+
+    grad_importance = np.zeros(n_features, dtype=np.float64)
+    grad_importance_signal = np.zeros(n_features, dtype=np.float64)
+    grad_importance_background = np.zeros(n_features, dtype=np.float64)
+
+    for f in range(n_features):
+        all_vals, sig_vals, bkg_vals = [], [], []
+        for i in range(n_grad):
+            valid_n = int(mask_np[i].sum())
+            if valid_n == 0:
+                continue
+            g = np.abs(grads[i, :valid_n, f])
+            all_vals.extend(g.tolist())
+            if grad_labels[i] == 1:
+                sig_vals.extend(g.tolist())
+            else:
+                bkg_vals.extend(g.tolist())
+
+        grad_importance[f] = float(np.mean(all_vals)) if len(all_vals) else 0.0
+        grad_importance_signal[f] = float(np.mean(sig_vals)) if len(sig_vals) else 0.0
+        grad_importance_background[f] = float(np.mean(bkg_vals)) if len(bkg_vals) else 0.0
+
+    def _safe_norm(v):
+        s = float(np.sum(v))
+        return v / s if s > 0 else v
+
+    grad_importance = _safe_norm(grad_importance)
+    grad_importance_signal = _safe_norm(grad_importance_signal)
+    grad_importance_background = _safe_norm(grad_importance_background)
+
+    # 2) Permutation importance (class-conditional)
+    perm_importance = np.zeros(n_features, dtype=np.float64)
+    sig_rows = np.where(perm_labels == 1)[0]
+    bkg_rows = np.where(perm_labels == 0)[0]
+    sig_rows_t = torch.as_tensor(sig_rows, dtype=torch.long, device=perm_x.device)
+    bkg_rows_t = torch.as_tensor(bkg_rows, dtype=torch.long, device=perm_x.device)
+
+    for f in range(n_features):
+        drops = []
+        for _ in range(N_PERMUTATIONS):
+            x_p = perm_x.clone()
+
+            if sig_rows_t.numel() > 1:
+                p_sig = sig_rows_t[torch.randperm(sig_rows_t.numel(), device=perm_x.device)]
+                x_p[sig_rows_t, :, f] = perm_x[p_sig, :, f]
+            if bkg_rows_t.numel() > 1:
+                p_bkg = bkg_rows_t[torch.randperm(bkg_rows_t.numel(), device=perm_x.device)]
+                x_p[bkg_rows_t, :, f] = perm_x[p_bkg, :, f]
+
+            eval_mask = perm_mask if f != 1 else (x_p[:, :, 1] > 0)
             with torch.no_grad():
-                tmep_outputs = model(perm_x_copy, particle_mask=perm_mask)
-                perm_outputs_fi = (
-                    torch.sigmoid(tmep_outputs["classification"])
+                s = (
+                    torch.sigmoid(model(x_p, particle_mask=eval_mask)["classification"])
                     .squeeze()
+                    .detach()
                     .cpu()
                     .numpy()
                 )
-            try:
-                perm_auc = roc_auc_score_fi(
-                    perm_labels, perm_outputs_fi, sample_weight=perm_weights
-                )
-                auc_drops.append(baseline_auc - perm_auc)
-            except:
-                auc_drops.append(0)
-        perm_importance[feat_idx] = np.mean(auc_drops)
-        if (feat_idx + 1) % 4 == 0:
-            print(
-                f"    Processed {feat_idx + 1}/{min(len(input_feature_names), perm_x.shape[2])} features"
-            )
 
-    # 3. Feature ablation
-    print("3. Computing feature ablation importance...")
-    ablation_importance = np.zeros(len(input_feature_names))
-    for feat_idx in range(min(len(input_feature_names), perm_x.shape[2])):
-        ablated_x = perm_x.clone()
-        ablated_x[:, :, feat_idx] = 0
+            auc_p = roc_auc_score_fi(perm_labels, s, sample_weight=perm_weights)
+            drops.append(baseline_auc - auc_p)
+
+        perm_importance[f] = float(np.mean(drops))
+
+    # 3) Ablation importance (corrected)
+    ablation_importance = np.zeros(n_features, dtype=np.float64)
+    for f in range(n_features):
+        x_z = perm_x.clone()
+        x_z[:, :, f] = 0.0
+
+        eval_mask = perm_mask if f != 1 else (x_z[:, :, 1] > 0)
         with torch.no_grad():
-            tmep_outputs = model(ablated_x, particle_mask=perm_mask)
-            ablated_outputs = (
-                torch.sigmoid(tmep_outputs["classification"]).squeeze().cpu().numpy()
+            s = (
+                torch.sigmoid(model(x_z, particle_mask=eval_mask)["classification"])
+                .squeeze()
+                .detach()
+                .cpu()
+                .numpy()
             )
-        try:
-            ablated_auc = roc_auc_score_fi(
-                perm_labels, ablated_outputs, sample_weight=perm_weights
-            )
-            ablation_importance[feat_idx] = baseline_auc - ablated_auc
-        except:
-            ablation_importance[feat_idx] = 0
 
-    # 4. Statistical feature separability
-    print("4. Computing statistical feature separability...")
-    stat_x = all_constituents[:, :, : len(input_feature_names)].float().numpy()
-    stat_mask_fi = (all_constituents[:, :, 1] > 0).numpy()
-    stat_labels = all_labels
-    fisher_scores = np.zeros(len(input_feature_names))
-    ks_scores = np.zeros(len(input_feature_names))
-    for feat_idx in range(min(len(input_feature_names), stat_x.shape[2])):
-        sig_feat_vals = stat_x[stat_labels == 1, :, feat_idx]
-        sig_mask_vals = stat_mask_fi[stat_labels == 1]
-        sig_vals_fi = sig_feat_vals[sig_mask_vals].flatten()
-        bkg_feat_vals = stat_x[stat_labels == 0, :, feat_idx]
-        bkg_mask_vals = stat_mask_fi[stat_labels == 0]
-        bkg_vals_fi = bkg_feat_vals[bkg_mask_vals].flatten()
-        sig_mean_fi, bkg_mean_fi = sig_vals_fi.mean(), bkg_vals_fi.mean()
-        sig_var_fi, bkg_var_fi = sig_vals_fi.var() + 1e-8, bkg_vals_fi.var() + 1e-8
-        fisher_scores[feat_idx] = (sig_mean_fi - bkg_mean_fi) ** 2 / (
-            sig_var_fi + bkg_var_fi
+        auc_z = roc_auc_score_fi(perm_labels, s, sample_weight=perm_weights)
+        ablation_importance[f] = baseline_auc - auc_z
+
+    # 4) Statistical separability (on corrected subset)
+    stat_x = perm_x[:, :, :n_features].detach().cpu().numpy()
+    stat_mask = perm_mask.detach().cpu().numpy()
+    stat_labels = perm_labels
+
+    fisher_scores = np.zeros(n_features, dtype=np.float64)
+    ks_scores = np.zeros(n_features, dtype=np.float64)
+
+    for f in range(n_features):
+        sig_feat = stat_x[stat_labels == 1, :, f]
+        bkg_feat = stat_x[stat_labels == 0, :, f]
+        sig_m = stat_mask[stat_labels == 1]
+        bkg_m = stat_mask[stat_labels == 0]
+
+        sig_vals = sig_feat[sig_m].reshape(-1)
+        bkg_vals = bkg_feat[bkg_m].reshape(-1)
+
+        if len(sig_vals) < 2 or len(bkg_vals) < 2:
+            fisher_scores[f] = 0.0
+            ks_scores[f] = 0.0
+            continue
+
+        mu_s, mu_b = np.mean(sig_vals), np.mean(bkg_vals)
+        var_s, var_b = np.var(sig_vals) + 1e-8, np.var(bkg_vals) + 1e-8
+        fisher_scores[f] = (mu_s - mu_b) ** 2 / (var_s + var_b)
+
+        n_sub = min(N_KS_SUBSAMPLE, len(sig_vals), len(bkg_vals))
+        s_sub = (
+            rng.choice(sig_vals, size=n_sub, replace=False)
+            if len(sig_vals) > n_sub
+            else sig_vals
         )
-        n_subsample = min(10000, len(sig_vals_fi), len(bkg_vals_fi))
-        sig_sample = (
-            np.random.choice(sig_vals_fi, n_subsample, replace=False)
-            if len(sig_vals_fi) > n_subsample
-            else sig_vals_fi
+        b_sub = (
+            rng.choice(bkg_vals, size=n_sub, replace=False)
+            if len(bkg_vals) > n_sub
+            else bkg_vals
         )
-        bkg_sample = (
-            np.random.choice(bkg_vals_fi, n_subsample, replace=False)
-            if len(bkg_vals_fi) > n_subsample
-            else bkg_vals_fi
-        )
-        ks_stat, _ = ks_2samp(sig_sample, bkg_sample)
-        ks_scores[feat_idx] = ks_stat
+        ks_scores[f] = ks_2samp(s_sub, b_sub).statistic
 
-    # 5. Visualize results
-    print("\nGenerating visualizations...")
-    n_plot_features = min(len(input_feature_names), 12)
-    plot_feature_names = input_feature_names[:n_plot_features]
+    # Keep only plotting slice
+    n_plot = min(N_PLOT_FEATURES_MAX, n_features)
+    names = input_feature_names[:n_plot]
+    x = np.arange(n_plot)
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    y_pos_fi = np.arange(n_plot_features)
+    def _norm01(a):
+        a = np.asarray(a, dtype=float)
+        lo, hi = np.min(a), np.max(a)
+        return (a - lo) / (hi - lo) if (hi - lo) > 0 else np.zeros_like(a)
 
-    ax = axes[0, 0]
-    sorted_idx_fi = np.argsort(grad_importance[:n_plot_features])[::-1]
-    ax.barh(
-        y_pos_fi,
-        grad_importance[:n_plot_features][sorted_idx_fi],
-        color="steelblue",
-        alpha=0.8,
-    )
-    ax.set_yticks(y_pos_fi)
-    ax.set_yticklabels([plot_feature_names[i] for i in sorted_idx_fi])
+    combined_score = (
+        _norm01(grad_importance[:n_plot])
+        + _norm01(np.maximum(perm_importance[:n_plot], 0.0))
+        + _norm01(np.maximum(ablation_importance[:n_plot], 0.0))
+        + _norm01(fisher_scores[:n_plot])
+        + _norm01(ks_scores[:n_plot])
+    ) / 5.0
+
+    # Plot A: Gradient importance
+    idx = np.argsort(grad_importance[:n_plot])[::-1]
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.barh(np.arange(n_plot), grad_importance[:n_plot][idx], color="steelblue", alpha=0.85)
+    ax.set_yticks(np.arange(n_plot))
+    ax.set_yticklabels([rf"${names[i]}$" for i in idx])
     ax.set_xlabel("Normalized Mean |Gradient|")
     ax.set_title("Gradient-Based Importance")
     ax.invert_yaxis()
+    ax.grid(axis="x", alpha=0.25)
+    plt.tight_layout()
+    save_fig(fig, "feature_importance_gradient")
+    plt.close(fig)
 
-    ax = axes[0, 1]
-    sorted_idx_fi = np.argsort(perm_importance[:n_plot_features])[::-1]
-    colors_fi = [
-        "green" if v > 0 else "red"
-        for v in perm_importance[:n_plot_features][sorted_idx_fi]
-    ]
-    ax.barh(
-        y_pos_fi,
-        perm_importance[:n_plot_features][sorted_idx_fi],
-        color=colors_fi,
-        alpha=0.8,
-    )
-    ax.set_yticks(y_pos_fi)
-    ax.set_yticklabels([plot_feature_names[i] for i in sorted_idx_fi])
-    ax.set_xlabel("AUC Drop When Permuted")
+    # Plot B: Permutation importance
+    idx = np.argsort(perm_importance[:n_plot])[::-1]
+    vals = perm_importance[:n_plot][idx]
+    colors = ["green" if v > 0 else "red" for v in vals]
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.barh(np.arange(n_plot), vals, color=colors, alpha=0.85)
+    ax.set_yticks(np.arange(n_plot))
+    ax.set_yticklabels([rf"${names[i]}$" for i in idx])
+    ax.set_xlabel("AUC Drop When Permuted (Class-Conditional)")
     ax.set_title("Permutation Importance")
-    ax.axvline(0, color="black", linestyle="--", alpha=0.5)
+    ax.axvline(0, color="black", linestyle="--", alpha=0.6)
     ax.invert_yaxis()
+    ax.grid(axis="x", alpha=0.25)
+    plt.tight_layout()
+    save_fig(fig, "feature_importance_permutation")
+    plt.close(fig)
 
-    ax = axes[0, 2]
-    sorted_idx_fi = np.argsort(ablation_importance[:n_plot_features])[::-1]
-    colors_fi = [
-        "green" if v > 0 else "red"
-        for v in ablation_importance[:n_plot_features][sorted_idx_fi]
-    ]
-    ax.barh(
-        y_pos_fi,
-        ablation_importance[:n_plot_features][sorted_idx_fi],
-        color=colors_fi,
-        alpha=0.8,
-    )
-    ax.set_yticks(y_pos_fi)
-    ax.set_yticklabels([plot_feature_names[i] for i in sorted_idx_fi])
+    # Plot C: Ablation importance
+    idx = np.argsort(ablation_importance[:n_plot])[::-1]
+    vals = ablation_importance[:n_plot][idx]
+    colors = ["green" if v > 0 else "red" for v in vals]
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.barh(np.arange(n_plot), vals, color=colors, alpha=0.85)
+    ax.set_yticks(np.arange(n_plot))
+    ax.set_yticklabels([rf"${names[i]}$" for i in idx])
     ax.set_xlabel("AUC Drop When Zeroed")
     ax.set_title("Feature Ablation Importance")
-    ax.axvline(0, color="black", linestyle="--", alpha=0.5)
+    ax.axvline(0, color="black", linestyle="--", alpha=0.6)
     ax.invert_yaxis()
+    ax.grid(axis="x", alpha=0.25)
+    plt.tight_layout()
+    save_fig(fig, "feature_importance_ablation")
+    plt.close(fig)
 
-    ax = axes[1, 0]
-    sorted_idx_fi = np.argsort(fisher_scores[:n_plot_features])[::-1]
-    ax.barh(
-        y_pos_fi,
-        fisher_scores[:n_plot_features][sorted_idx_fi],
-        color="darkorange",
-        alpha=0.8,
-    )
-    ax.set_yticks(y_pos_fi)
-    ax.set_yticklabels([plot_feature_names[i] for i in sorted_idx_fi])
+    # Plot D: Fisher
+    idx = np.argsort(fisher_scores[:n_plot])[::-1]
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.barh(np.arange(n_plot), fisher_scores[:n_plot][idx], color="darkorange", alpha=0.85)
+    ax.set_yticks(np.arange(n_plot))
+    ax.set_yticklabels([rf"${names[i]}$" for i in idx])
     ax.set_xlabel("Fisher Discriminant Ratio")
     ax.set_title("Statistical Separability (Fisher)")
     ax.invert_yaxis()
+    ax.grid(axis="x", alpha=0.25)
+    plt.tight_layout()
+    save_fig(fig, "feature_importance_fisher")
+    plt.close(fig)
 
-    ax = axes[1, 1]
-    sorted_idx_fi = np.argsort(ks_scores[:n_plot_features])[::-1]
-    ax.barh(
-        y_pos_fi, ks_scores[:n_plot_features][sorted_idx_fi], color="purple", alpha=0.8
-    )
-    ax.set_yticks(y_pos_fi)
-    ax.set_yticklabels([plot_feature_names[i] for i in sorted_idx_fi])
+    # Plot E: KS
+    idx = np.argsort(ks_scores[:n_plot])[::-1]
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.barh(np.arange(n_plot), ks_scores[:n_plot][idx], color="purple", alpha=0.85)
+    ax.set_yticks(np.arange(n_plot))
+    ax.set_yticklabels([rf"${names[i]}$" for i in idx])
     ax.set_xlabel("KS Statistic")
-    ax.set_title("Statistical Separability (KS Test)")
+    ax.set_title("Statistical Separability (KS)")
     ax.invert_yaxis()
+    ax.grid(axis="x", alpha=0.25)
+    plt.tight_layout()
+    save_fig(fig, "feature_importance_ks")
+    plt.close(fig)
 
-    ax = axes[1, 2]
-
-    def normalize_scores(scores):
-        if scores.max() - scores.min() > 0:
-            return (scores - scores.min()) / (scores.max() - scores.min())
-        return scores
-
-    combined_score = (
-        normalize_scores(grad_importance[:n_plot_features])
-        + normalize_scores(np.maximum(perm_importance[:n_plot_features], 0))
-        + normalize_scores(np.maximum(ablation_importance[:n_plot_features], 0))
-        + normalize_scores(fisher_scores[:n_plot_features])
-        + normalize_scores(ks_scores[:n_plot_features])
-    ) / 5
-    sorted_idx_fi = np.argsort(combined_score)[::-1]
-    ax.barh(y_pos_fi, combined_score[sorted_idx_fi], color="darkgreen", alpha=0.8)
-    ax.set_yticks(y_pos_fi)
-    ax.set_yticklabels([plot_feature_names[i] for i in sorted_idx_fi])
+    # Plot F: Combined ranking
+    idx = np.argsort(combined_score)[::-1]
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.barh(np.arange(n_plot), combined_score[idx], color="darkgreen", alpha=0.85)
+    ax.set_yticks(np.arange(n_plot))
+    ax.set_yticklabels([rf"${names[i]}$" for i in idx])
     ax.set_xlabel("Combined Importance Score")
     ax.set_title("Overall Feature Ranking")
     ax.invert_yaxis()
-    plt.suptitle(
-        "Feature Importance Analysis for Signal vs Background Discrimination",
-        fontsize=14,
-    )
+    ax.grid(axis="x", alpha=0.25)
     plt.tight_layout()
-    save_fig(fig, "feature_importance_analysis")
+    save_fig(fig, "feature_importance_combined")
     plt.close(fig)
 
-    # Signal vs background gradient comparison
+    # Plot G: Gradient signal vs background
     fig, ax = plt.subplots(figsize=(12, 6))
-    x_fi = np.arange(n_plot_features)
-    width_fi = 0.35
+    w = 0.38
     ax.bar(
-        x_fi - width_fi / 2,
-        grad_importance_signal[:n_plot_features],
-        width_fi,
-        label="Signal (b-jets)",
+        x - w / 2,
+        grad_importance_signal[:n_plot],
+        w,
+        label="Signal",
         color="blue",
-        alpha=0.7,
+        alpha=0.75,
     )
     ax.bar(
-        x_fi + width_fi / 2,
-        grad_importance_background[:n_plot_features],
-        width_fi,
+        x + w / 2,
+        grad_importance_background[:n_plot],
+        w,
         label="Background",
         color="red",
-        alpha=0.7,
+        alpha=0.75,
     )
+    ax.set_xticks(x)
+    ax.set_xticklabels([rf"${name}$" for name in names], rotation=45, ha="right")
     ax.set_xlabel("Feature")
     ax.set_ylabel("Normalized Mean |Gradient|")
     ax.set_title("Gradient Importance: Signal vs Background")
-    ax.set_xticks(x_fi)
-    ax.set_xticklabels(plot_feature_names, rotation=45, ha="right")
     ax.legend()
     ax.grid(axis="y", alpha=0.3)
     plt.tight_layout()
-    save_fig(fig, "gradient_importance_by_class")
+    save_fig(fig, "feature_importance_gradient_signal_vs_background")
     plt.close(fig)
 
-    if n_features_fi > 12:
-        print("Computing gradient importance per particle type...")
-        grad_particle_types = np.argmax(
-            all_constituents[:n_grad_samples, :, 12:17].numpy(), axis=-1
-        )
-        grad_particle_types[~mask_np_fi] = -1
+    # Plot H: Feature correlation with model output
+    mean_features = np.zeros((len(perm_labels), n_plot), dtype=np.float64)
+    pm_np = perm_mask.detach().cpu().numpy()
+    px_np = perm_x.detach().cpu().numpy()
 
-        grad_by_type = np.zeros((N_PARTICLE_TYPES, n_plot_features), dtype=np.float64)
-        for pid in range(N_PARTICLE_TYPES):
-            for feat_idx in range(n_plot_features):
-                grads_list = []
-                for i in range(n_grad_samples):
-                    n_valid = int(mask_np_fi[i].sum())
-                    ptypes_i = grad_particle_types[i, :n_valid]
-                    feat_grads = np.abs(grads_prob[i, :n_valid, feat_idx].numpy())
-                    type_grads = feat_grads[ptypes_i == pid]
-                    grads_list.extend(type_grads)
-                grad_by_type[pid, feat_idx] = np.mean(grads_list) if grads_list else 0.0
+    for i in range(len(perm_labels)):
+        valid = pm_np[i]
+        if np.any(valid):
+            mean_features[i] = px_np[i, valid, :n_plot].mean(axis=0)
 
-        for pid in range(N_PARTICLE_TYPES):
-            row_sum = grad_by_type[pid].sum()
-            if row_sum > 0:
-                grad_by_type[pid] /= row_sum
+    corr_vals = np.zeros(n_plot, dtype=np.float64)
+    for f in range(n_plot):
+        a = mean_features[:, f]
+        b = baseline_scores
+        if np.std(a) > 1e-12 and np.std(b) > 1e-12:
+            corr_vals[f] = np.corrcoef(a, b)[0, 1]
+        else:
+            corr_vals[f] = 0.0
 
-        fig, ax = plt.subplots(figsize=(16, 7))
-        x = np.arange(n_plot_features)
-        total_width = 0.8
-        bar_width = total_width / N_PARTICLE_TYPES
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.bar(
+        np.arange(n_plot),
+        corr_vals,
+        color=["blue" if c > 0 else "red" for c in corr_vals],
+        alpha=0.75,
+    )
+    ax.set_xticks(np.arange(n_plot))
+    ax.set_xticklabels([rf"${name}$" for name in names], rotation=45, ha="right")
+    ax.set_xlabel("Feature")
+    ax.set_ylabel("Pearson Correlation")
+    ax.set_title("Feature Correlation with Model Output")
+    ax.axhline(0, color="black", linestyle="--", alpha=0.6)
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    save_fig(fig, "feature_importance_correlation")
+    plt.close(fig)
 
-        for pid in range(N_PARTICLE_TYPES):
-            offset = (pid - N_PARTICLE_TYPES / 2 + 0.5) * bar_width
-            ax.bar(
-                x + offset,
-                grad_by_type[pid],
-                bar_width,
-                label=PARTICLE_TYPE_NAMES[pid],
-                color=PARTICLE_TYPE_COLORS[pid],
-                alpha=0.8,
-            )
+    # DXY diagnostics + legacy comparison
+    if "d_xy" in input_feature_names and input_feature_names.index("d_xy") < n_features:
+        dxy_idx = input_feature_names.index("d_xy")
+        dxy_zero_auc = baseline_auc - ablation_importance[dxy_idx]
 
-        ax.set_xticks(x)
-        ax.set_xticklabels(plot_feature_names, rotation=45, ha="right")
-        ax.set_ylabel("Normalized Mean |Gradient|")
-        ax.set_title("Feature Importance by Particle Type (Gradient-Based)")
-        ax.legend(fontsize=9)
-        ax.grid(axis="y", alpha=0.3)
-        plt.tight_layout()
-        save_fig(fig, "gradient_importance_by_particle_type")
-        plt.close(fig)
-
-        fig, ax = plt.subplots(figsize=(14, 5))
-        im = ax.imshow(grad_by_type, cmap="YlOrRd", aspect="auto")
-        ax.set_yticks(range(N_PARTICLE_TYPES))
-        ax.set_yticklabels(PARTICLE_TYPE_NAMES)
-        ax.set_xticks(range(n_plot_features))
-        ax.set_xticklabels(plot_feature_names, rotation=45, ha="right")
-        ax.set_title("Feature Importance Heatmap by Particle Type")
-        plt.colorbar(im, ax=ax, label="Normalized |Gradient|")
-
-        threshold = grad_by_type.max() * 0.5 if grad_by_type.size else 0.0
-        for ii in range(N_PARTICLE_TYPES):
-            for jj in range(n_plot_features):
-                ax.text(
-                    jj,
-                    ii,
-                    f"{grad_by_type[ii, jj]:.3f}",
-                    ha="center",
-                    va="center",
-                    fontsize=7,
-                    color="white" if grad_by_type[ii, jj] > threshold else "black",
+        cc_aucs = []
+        for _ in range(N_PERMUTATIONS):
+            x_cc = perm_x.clone()
+            if sig_rows_t.numel() > 1:
+                p_sig = sig_rows_t[torch.randperm(sig_rows_t.numel(), device=perm_x.device)]
+                x_cc[sig_rows_t, :, dxy_idx] = perm_x[p_sig, :, dxy_idx]
+            if bkg_rows_t.numel() > 1:
+                p_bkg = bkg_rows_t[torch.randperm(bkg_rows_t.numel(), device=perm_x.device)]
+                x_cc[bkg_rows_t, :, dxy_idx] = perm_x[p_bkg, :, dxy_idx]
+            with torch.no_grad():
+                sc = (
+                    torch.sigmoid(model(x_cc, particle_mask=perm_mask)["classification"])
+                    .squeeze()
+                    .detach()
+                    .cpu()
+                    .numpy()
                 )
+            cc_aucs.append(roc_auc_score_fi(perm_labels, sc, sample_weight=perm_weights))
 
-        plt.tight_layout()
-        save_fig(fig, "gradient_importance_heatmap_by_particle_type")
-        plt.close(fig)
-        print("Done with particle-type-specific gradient importance.")
+        n_legacy = min(1000, len(all_constituents))
+        x_legacy = all_constituents[:n_legacy].float().to(device)
+        m_legacy = x_legacy[:, :, 1] > 0
+        y_legacy = np.asarray(all_labels[:n_legacy]).astype(int).reshape(-1)
+        w_legacy = np.asarray(all_qcd_weights_val[:n_legacy]).reshape(-1).astype(np.float64)
 
+        with torch.no_grad():
+            s_legacy = (
+                torch.sigmoid(model(x_legacy, particle_mask=m_legacy)["classification"])
+                .squeeze()
+                .detach()
+                .cpu()
+                .numpy()
+            )
+        auc_legacy = roc_auc_score_fi(y_legacy, s_legacy, sample_weight=w_legacy)
+
+        x_legacy_zero = x_legacy.clone()
+        x_legacy_zero[:, :, dxy_idx] = 0.0
+        with torch.no_grad():
+            s_legacy_zero = (
+                torch.sigmoid(model(x_legacy_zero, particle_mask=m_legacy)["classification"])
+                .squeeze()
+                .detach()
+                .cpu()
+                .numpy()
+            )
+        auc_legacy_zero = roc_auc_score_fi(y_legacy, s_legacy_zero, sample_weight=w_legacy)
+
+        wl_sum = float(np.sum(w_legacy))
+        wl2_sum = float(np.sum(np.square(w_legacy)))
+        n_eff_legacy = (wl_sum * wl_sum / max(wl2_sum, 1e-12)) if wl2_sum > 0 else 0.0
+
+        print("\nDXY reconciliation")
+        print(
+            f"  Legacy first-1000: n_eff~{n_eff_legacy:.1f}, baseline={auc_legacy:.4f}, zero={auc_legacy_zero:.4f}, drop={auc_legacy-auc_legacy_zero:+.4f}"
+        )
+        print(
+            f"  Corrected subset : n_eff~{n_eff:.1f}, baseline={baseline_auc:.4f}, zero={dxy_zero_auc:.4f}, drop={baseline_auc-dxy_zero_auc:+.4f}"
+        )
+        print(f"  Corrected class-conditional perm AUC(avg): {np.mean(cc_aucs):.4f}")
+
+    # Summary table
+    print("\n" + "=" * 100)
+    print("FEATURE IMPORTANCE SUMMARY (CORRECTED)")
+    print("=" * 100)
+    print(
+        f"{'Feature':<15} {'Gradient':>10} {'Permute':>10} {'Ablation':>10} {'Fisher':>10} {'KS':>10} {'Combined':>10}"
+    )
+    print("-" * 100)
+
+    for i in range(n_plot):
+        print(
+            f"{names[i]:<15} "
+            f"{grad_importance[i]:>10.4f} "
+            f"{perm_importance[i]:>10.4f} "
+            f"{ablation_importance[i]:>10.4f} "
+            f"{fisher_scores[i]:>10.4f} "
+            f"{ks_scores[i]:>10.4f} "
+            f"{combined_score[i]:>10.4f}"
+        )
+
+    top5 = np.argsort(combined_score)[::-1][:5]
+    print("\nTop 5 features (combined corrected):")
+    for r, idx in enumerate(top5, 1):
+        print(f"  {r}. {names[idx]} (score={combined_score[idx]:.4f})")
+
+    perm_importance_old_faulty_replaced = True
+    ablation_importance_old_faulty_replaced = True
+
+    print("\nDone.")
+    print(
+        "Old faulty permutation/ablation results are replaced in-memory by corrected arrays:"
+    )
+    print("  perm_importance, ablation_importance")
+
+    # Permutation + ablation importance by particle type
+    if all_constituents.shape[2] <= 12:
+        print(
+            "Skipping particle-type permutation/ablation: no particle-ID one-hot features found."
+        )
+    else:
         print("\nComputing permutation + ablation importance by particle type...")
+
         n_particle_types = min(5, perm_x.shape[2] - 12)
-        ptype_names = PARTICLE_TYPE_NAMES[:n_particle_types]
-        ptype_colors = PARTICLE_TYPE_COLORS[:n_particle_types]
+        ptype_names = globals().get(
+            "PARTICLE_TYPE_NAMES", [f"Type {i}" for i in range(n_particle_types)]
+        )
+        ptype_colors = globals().get(
+            "PARTICLE_TYPE_COLORS",
+            ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"][:n_particle_types],
+        )
+
         n_type_features = min(12, len(input_feature_names), perm_x.shape[2])
         type_feature_names = input_feature_names[:n_type_features]
 
@@ -5498,24 +5982,7 @@ def main():
         perm_by_type = np.zeros((n_particle_types, n_type_features), dtype=np.float64)
         abla_by_type = np.zeros((n_particle_types, n_type_features), dtype=np.float64)
 
-        n_perm_local = n_permutations
-        perm_weights = np.ones(n_perm_samples, dtype=np.float64)
-        if (
-            "all_qcd_weights_val" in locals()
-            and len(all_qcd_weights_val) >= n_perm_samples
-        ):
-            perm_weights = np.asarray(
-                all_qcd_weights_val[:n_perm_samples], dtype=np.float64
-            )
-
-        try:
-            baseline_auc_type = roc_auc_score_fi(
-                perm_labels,
-                baseline_outputs_fi,
-                sample_weight=perm_weights,
-            )
-        except Exception:
-            baseline_auc_type = baseline_auc
+        n_perm_local = N_PERMUTATIONS
 
         for pid in range(n_particle_types):
             type_mask = valid_const & (ptype_idx == pid)
@@ -5546,11 +6013,7 @@ def main():
                     with torch.no_grad():
                         eval_mask = perm_mask if f_idx != 1 else (x_perm_t[:, :, 1] > 0)
                         s_perm_t = (
-                            torch.sigmoid(
-                                model(x_perm_t, particle_mask=eval_mask)[
-                                    "classification"
-                                ]
-                            )
+                            torch.sigmoid(model(x_perm_t, particle_mask=eval_mask)["classification"])
                             .squeeze()
                             .cpu()
                             .numpy()
@@ -5561,7 +6024,7 @@ def main():
                         s_perm_t,
                         sample_weight=perm_weights,
                     )
-                    auc_drops.append(baseline_auc_type - auc_perm_t)
+                    auc_drops.append(baseline_auc - auc_perm_t)
 
                 perm_by_type[pid, f_idx] = float(np.mean(auc_drops))
 
@@ -5570,9 +6033,7 @@ def main():
                 with torch.no_grad():
                     eval_mask = perm_mask if f_idx != 1 else (x_zero_t[:, :, 1] > 0)
                     s_zero_t = (
-                        torch.sigmoid(
-                            model(x_zero_t, particle_mask=eval_mask)["classification"]
-                        )
+                        torch.sigmoid(model(x_zero_t, particle_mask=eval_mask)["classification"])
                         .squeeze()
                         .cpu()
                         .numpy()
@@ -5583,30 +6044,32 @@ def main():
                     s_zero_t,
                     sample_weight=perm_weights,
                 )
-                abla_by_type[pid, f_idx] = baseline_auc_type - auc_zero_t
+                abla_by_type[pid, f_idx] = baseline_auc - auc_zero_t
 
         def plot_stacked_particle_contrib(
-            contrib_by_type,
-            feature_names,
-            type_names,
-            type_colors,
-            title,
-            xlabel,
+            contrib_by_type, feature_names, type_names, type_colors, title, xlabel
         ):
+            """
+            contrib_by_type: shape [n_types, n_features]
+            Stacks positive contributions to the right and negative to the left of zero.
+            The algebraic total per feature is the sum across all particle types.
+            """
             contrib_by_type = np.asarray(contrib_by_type, dtype=float)
             totals = contrib_by_type.sum(axis=0)
+
             order = np.argsort(totals)[::-1]
             totals = totals[order]
-            feat_sorted = [feature_names[i] for i in order]
-            contrib_sorted = contrib_by_type[:, order]
+            feat_sorted = [rf"${feature_names[i]}$" for i in order]
+            C = contrib_by_type[:, order]
 
             y = np.arange(len(feat_sorted))
             pos_base = np.zeros(len(feat_sorted), dtype=float)
             neg_base = np.zeros(len(feat_sorted), dtype=float)
 
             fig, ax = plt.subplots(figsize=(11, max(6, 0.5 * len(feat_sorted))))
-            for t in range(contrib_sorted.shape[0]):
-                vals = contrib_sorted[t]
+
+            for t in range(C.shape[0]):
+                vals = C[t]
                 left = np.where(vals >= 0, pos_base, neg_base)
                 ax.barh(
                     y,
@@ -5630,6 +6093,7 @@ def main():
                 zorder=4,
                 label="Total (sum)",
             )
+
             ax.axvline(0.0, color="black", linestyle="--", alpha=0.65)
             ax.set_yticks(y)
             ax.set_yticklabels(feat_sorted)
@@ -5642,8 +6106,8 @@ def main():
 
             print(f"\n{title}")
             print("-" * len(title))
-            for i, f_name in enumerate(feat_sorted):
-                print(f"{f_name:<14} total={totals[i]:+0.5f}")
+            for i, f in enumerate(feat_sorted):
+                print(f"{f:<14} total={totals[i]:+0.5f}")
             return fig
 
         fig_stacked_perm = plot_stacked_particle_contrib(
@@ -5654,6 +6118,7 @@ def main():
             "Permutation Importance by Feature (Stacked by Particle Type)",
             "AUC Drop When Permuted",
         )
+
         fig_stacked_ablate = plot_stacked_particle_contrib(
             abla_by_type,
             type_feature_names,
@@ -5668,16 +6133,10 @@ def main():
             p_top = np.argsort(perm_by_type[pid])[::-1][:3]
             a_top = np.argsort(abla_by_type[pid])[::-1][:3]
             p_txt = ", ".join(
-                [
-                    f"{type_feature_names[i]} ({perm_by_type[pid, i]:+.4f})"
-                    for i in p_top
-                ]
+                [f"{type_feature_names[i]} ({perm_by_type[pid, i]:+.4f})" for i in p_top]
             )
             a_txt = ", ".join(
-                [
-                    f"{type_feature_names[i]} ({abla_by_type[pid, i]:+.4f})"
-                    for i in a_top
-                ]
+                [f"{type_feature_names[i]} ({abla_by_type[pid, i]:+.4f})" for i in a_top]
             )
             print(f"  {ptype_names[pid]}:")
             print(f"    Permute: {p_txt}")
@@ -5686,6 +6145,7 @@ def main():
         permutation_importance_by_particle_type = perm_by_type
         ablation_importance_by_particle_type = abla_by_type
         particle_type_feature_names = type_feature_names
+
         print("\nStored arrays:")
         print(
             "  permutation_importance_by_particle_type  shape =",
@@ -5705,58 +6165,6 @@ def main():
         )
         print("Done with particle-type-specific permutation and ablation importance.")
 
-    # Feature correlation with model output
-    print("\nComputing feature correlations with model output...")
-    with torch.no_grad():
-        tmep_outputs = model(perm_x, particle_mask=perm_mask)
-        pred_outputs_fi = (
-            torch.sigmoid(tmep_outputs["classification"]).squeeze().cpu().numpy()
-        )
-    mean_features = np.zeros((n_perm_samples, n_plot_features))
-    for i in range(n_perm_samples):
-        n_valid = int(perm_mask[i].sum().item())
-        for f_idx in range(n_plot_features):
-            mean_features[i, f_idx] = perm_x[i, :n_valid, f_idx].cpu().numpy().mean()
-    feature_pred_corr = np.zeros(n_plot_features)
-    for f_idx in range(n_plot_features):
-        feature_pred_corr[f_idx] = np.corrcoef(
-            mean_features[:, f_idx], pred_outputs_fi
-        )[0, 1]
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    colors_corr = ["blue" if c > 0 else "red" for c in feature_pred_corr]
-    ax.bar(range(n_plot_features), feature_pred_corr, color=colors_corr, alpha=0.7)
-    ax.set_xticks(range(n_plot_features))
-    ax.set_xticklabels(plot_feature_names, rotation=45, ha="right")
-    ax.set_ylabel("Pearson Correlation")
-    ax.set_xlabel("Feature")
-    ax.set_title("Feature Correlation with Model Output (b-tag Score)")
-    ax.axhline(0, color="black", linestyle="--", alpha=0.5)
-    ax.grid(axis="y", alpha=0.3)
-    plt.tight_layout()
-    save_fig(fig, "feature_correlation_with_output")
-    plt.close(fig)
-
-    # Summary table
-    print("\n" + "=" * 80)
-    print("FEATURE IMPORTANCE SUMMARY")
-    print("=" * 80)
-    print(
-        f"{'Feature':<15} {'Gradient':>10} {'Permute':>10} {'Ablation':>10} {'Fisher':>10} {'KS':>10} {'Combined':>10}"
-    )
-    print("-" * 80)
-    for i in range(n_plot_features):
-        print(
-            f"{plot_feature_names[i]:<15} {grad_importance[i]:>10.4f} {perm_importance[i]:>10.4f} {ablation_importance[i]:>10.4f} {fisher_scores[i]:>10.4f} {ks_scores[i]:>10.4f} {combined_score[i]:>10.4f}"
-        )
-    print("\n" + "=" * 80)
-    print("TOP 5 MOST IMPORTANT FEATURES (by combined score):")
-    print("=" * 80)
-    top_5_idx = np.argsort(combined_score)[::-1][:5]
-    for rank, idx_t5 in enumerate(top_5_idx, 1):
-        print(
-            f"  {rank}. {plot_feature_names[idx_t5]} (score: {combined_score[idx_t5]:.4f})"
-        )
     print(f"\n{'='*60}")
     print("Feature importance analysis complete!")
     print(f"{'='*60}")
