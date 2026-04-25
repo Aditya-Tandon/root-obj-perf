@@ -9,3 +9,6 @@ Updates*
 conf/
 *hydra*
 *.log
+*.pbs.*
+*.pbs
+*.png
