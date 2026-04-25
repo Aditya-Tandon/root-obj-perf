@@ -9,7 +9,7 @@ def gaussian(x, mu, sigma, A):
     return A * np.exp(-0.5 * ((x - mu) / sigma) ** 2)
 
 
-def fit_response_in_bin(response_values, bins=np.linspace(0, 2, 51)):
+def fit_response_in_bin(response_values, bins=np.linspace(0, 2, 51), density=False):
     """Fit a Gaussian to the response distribution in a single bin.
 
     Returns
@@ -18,7 +18,7 @@ def fit_response_in_bin(response_values, bins=np.linspace(0, 2, 51)):
     pcov : ndarray (3, 3) covariance matrix
     """
     bin_centers = 0.5 * (bins[1:] + bins[:-1])
-    counts, _ = np.histogram(response_values, bins=bins)
+    counts, _ = np.histogram(response_values, bins=bins, density=density)
     initial_guess = [1.0, 0.1, np.max(counts)]
     try:
         popt, pcov = curve_fit(
@@ -43,7 +43,7 @@ def get_resolution_vs_var(gen_var, pt_response, var_bins):
     for i in range(len(var_bins) - 1):
         mask = (gen_var > var_bins[i]) & (gen_var <= var_bins[i + 1])
         vals = pt_response[mask]
-        if len(vals) > 20:
+        if len(vals) > 10:
             (mu, sigma, A), cov = fit_response_in_bin(vals)
             mus.append(mu if not np.isnan(mu) else np.nan)
             sigmas.append(abs(sigma) if not np.isnan(sigma) else np.nan)
