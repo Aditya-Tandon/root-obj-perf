@@ -1701,7 +1701,7 @@ def main():
         (500, np.inf),
         (25, np.inf),
     ]
-    eta_ranges = [(0, 0.5), (0.5, 1.0), (1.0, 1.5), (1.5, 2.4), (0, 2.4)]
+    eta_ranges = [(0, 0.5), (0.5, 1.0), (1.0, 1.5), (1.5, 2.4), (0, 1.5), (0, 2.4)]
 
     val_jet_pt_cuts = val_jet_pt[val_cuts_mask]
     val_jet_eta_cuts = val_jet_eta[val_cuts_mask]
@@ -1783,7 +1783,7 @@ def main():
         vmax=1.0,
         ax=ax_unc,
         cbar_kws={"label": "AUC"},
-        annot_kws={"fontsize": 9},
+        annot_kws={"fontsize": 14},
     )
     ax_unc.set_xlabel(r"$|\eta|$")
     ax_unc.set_ylabel("Jet $p_T$ [GeV]")
