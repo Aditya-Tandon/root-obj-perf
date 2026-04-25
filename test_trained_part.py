@@ -9,16 +9,95 @@ test_trained_part.ipynb.  Usage:
 """
 
 import argparse
-import os
-import json
-import warnings
 import gc
+import importlib
+import json
+import os
+import warnings
+from itertools import combinations
 from typing import Tuple
 
-import numpy as np
-import torch
+import awkward as ak
+import evaluation.luminosity as luminosity_utils
+import evaluation.roc as roc_utils
+import fastjet
 import matplotlib
 import matplotlib.font_manager as fm
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import uproot
+import vector
+import wandb
+from data_pipeline.combined_loader import CombinedJetDataLoader
+from data_pipeline.datasets import L1JetDataset, StratifiedJetDataset
+from data_pipeline.make_particle_dataset import cluster_candidates
+from data_pipeline.root_loading import (
+    apply_custom_cuts,
+    load_and_prepare_data,
+    one_hot_encode_l1_puppi,
+    select_gen_b_quarks_from_higgs,
+)
+from data_pipeline.splitting import stratified_split
+from evaluation.attention import (
+    AttentionHook,
+    compute_pairwise_features,
+    compute_separability,
+    forward_with_activations,
+    forward_with_attention,
+)
+from evaluation.dihiggs import (
+    R_hh_func,
+    compute_significance_at_luminosity,
+    find_gen_b_pairs_with_indices,
+    pair_from_4jets,
+)
+from evaluation.efficiency import efficiency_table
+from evaluation.jet_matching import (
+    get_pure_jet_idxs_cross_matched,
+    get_purity_mask_cross_matched,
+)
+from evaluation.luminosity import (
+    load_physics_config,
+    scale_qcd_weights_raw,
+    signal_weight,
+)
+from evaluation.resolution import (
+    fit_response_in_bin,
+    gaussian,
+    get_resolution_vs_var,
+)
+from evaluation.roc import (
+    calculate_auc_uncertainty_2d_bins,
+    calculate_trained_roc_2d_bins,
+    get_working_points,
+    pr_auc_and_opt_s_over_root_b,
+)
+from matplotlib.patches import Ellipse, Patch
+from model.parT import ParticleTransformer
+from plotting.base import plot_roc_comparison
+from scipy.optimize import curve_fit
+from scipy.stats import entropy as sp_entropy
+from scipy.stats import gaussian_kde, ks_2samp
+from sklearn.calibration import calibration_curve
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.metrics import (
+    auc,
+    average_precision_score,
+    brier_score_loss,
+    log_loss,
+    precision_recall_curve,
+    roc_auc_score,
+    roc_curve,
+)
+from sklearn.metrics import roc_auc_score as roc_auc_score_fi
+from sklearn.neighbors import KNeighborsClassifier
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 matplotlib.use("Agg")  # non-interactive backend for saving plots
 import matplotlib.pyplot as plt
@@ -47,11 +126,6 @@ plt.rcParams.update(
         "font.serif": ["Times New Roman", "serif"],
     }
 )
-
-# ── Cell 1: Imports & configuration ───────────────────────────────
-import uproot
-import awkward as ak
-import vector
 
 warnings.filterwarnings("ignore", message="Passing an awkward array to a ufunc")
 ak.behavior.update(vector.backends.awkward.behavior)
@@ -96,11 +170,6 @@ def parse_args():
             "full (standard + AK8 H-tag parity sections from notebook)."
         ),
     )
-    parser.add_argument(
-        "--till_dhh",
-        action="store_true",
-        help="Skip attention analysis. Performs analysis only up till di-Higgs reconstruction.",
-    )
     return parser.parse_args()
 
 
@@ -108,13 +177,9 @@ def main():
     args = parse_args()
     print(f"Execution profile: {args.profile}")
 
-    till_dhh = args.till_dhh
-
     # Load configs
     with open("hh-bbbb-obj-config.json", "r") as f:
         config = json.load(f)
-
-    from evaluation.luminosity import load_physics_config
 
     _physics = load_physics_config()
     LUMINOSITY_FB = _physics["luminosity_fb"]
@@ -129,14 +194,6 @@ def main():
     print(f"Loaded config from {args.config}")
 
     # ── Cell 2: Load model from W&B checkpoint ────────────────────────
-    import wandb
-    from model.parT import ParticleTransformer
-    from data_pipeline.datasets import L1JetDataset, StratifiedJetDataset
-    from data_pipeline.splitting import stratified_split
-    from data_pipeline.combined_loader import CombinedJetDataLoader
-    from torch.utils.data import DataLoader
-    from tqdm import tqdm
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     wandb.init(project="part-btag-analysis")
@@ -730,22 +787,12 @@ def main():
     plt.close(fig)
 
     # ── Cell 8: ROC analysis & comparison with other taggers ──────────
-    from data_pipeline.root_loading import apply_custom_cuts, load_and_prepare_data
-    import evaluation.roc as roc_utils
-    import evaluation.luminosity as luminosity_utils
-    import importlib
-    from evaluation.roc import get_working_points
-    from evaluation.efficiency import efficiency_table
-    from evaluation.roc import pr_auc_and_opt_s_over_root_b
-    from plotting.base import plot_roc_comparison
-    from sklearn.metrics import roc_curve, auc
-
     if "sig_weights" not in roc_utils.roc_from_scores.__code__.co_varnames:
-        roc_utils = importlib.reload(roc_utils)
+        importlib.reload(roc_utils)
     roc_from_scores = roc_utils.roc_from_scores
 
     if not hasattr(luminosity_utils, "build_eval_weights"):
-        luminosity_utils = importlib.reload(luminosity_utils)
+        importlib.reload(luminosity_utils)
 
     # Re-load config (may have been mutated)
     with open("hh-bbbb-obj-config.json", "r") as f:
@@ -996,9 +1043,6 @@ def main():
     part_wps = get_working_points("Trained ParT", (fpr, tpr, roc_auc, thresholds))
 
     # ── Cell 9: PR curve, S/√B vs threshold, per-bin efficiency ──────
-    import pandas as pd
-    from sklearn.metrics import precision_recall_curve, average_precision_score
-
     labels = all_labels_after_cuts
     scores = all_outputs_after_cuts
     jet_pt_cuts = val_jet_pt[val_cuts_mask]
@@ -1078,9 +1122,6 @@ def main():
     # Load this in any notebook to plot or compare ROC curves without
     # re-running model inference.
     # ============================================================
-    import os
-    import numpy as np
-
     # Mirror the plot_dir formula from cell 13 so this cell is self-contained.
     _run_id = config_part.get("exp_name", "unknown_run").replace("/", "_")
     _art_name = CONFIG_PART.get("wandb", {}).get("artifact_name", "unknown_artifact")
@@ -1130,9 +1171,7 @@ def main():
     )
     print(f"Saved → {_cache_path}")
     print(f"  model : '{_model_label}'  |  weight mode : {eval_weight_mode}")
-    print(
-        f"  Trained ParT AUC : {roc_auc:.4f}  |  n_jets : {len(trained_scores):,}"
-    )
+    print(f"  Trained ParT AUC : {roc_auc:.4f}  |  n_jets : {len(trained_scores):,}")
     for _lbl, (_, _, _auc_v, _) in ref_roc_results.items():
         print(f"  {_lbl:20s} AUC : {_auc_v:.4f}")
 
@@ -1608,13 +1647,6 @@ def main():
     )
 
     # ── Cell 11: Generate and save all main plots ─────────────────────
-    import seaborn as sns
-    from sklearn.metrics import roc_auc_score
-    from evaluation.roc import (
-        calculate_trained_roc_2d_bins,
-        calculate_auc_uncertainty_2d_bins,
-    )
-
     print(f"Saving plots to: {plot_dir}")
 
     # 1. Model output distribution
@@ -2401,13 +2433,6 @@ def main():
         plt.close(fig)
 
     # ── Cell 14: Jet pT resolution analysis ──────────────────────────
-    from scipy.optimize import curve_fit
-    from evaluation.resolution import (
-        gaussian,
-        fit_response_in_bin,
-        get_resolution_vs_var,
-    )
-
     # Select signal jets only
     signal_mask_res = all_labels.squeeze() == 1
     jet_pt_sig = all_jet_pt_val[signal_mask_res]
@@ -2989,23 +3014,6 @@ def main():
     print(f"Saved resolution cache → {_cache_path}  (label='{_model_label}')")
 
     # ── Cell 22: Di-Higgs mass reconstruction with trained ParT ──────
-    import fastjet
-    from itertools import combinations
-    from data_pipeline.make_particle_dataset import cluster_candidates
-    from data_pipeline.root_loading import (
-        load_and_prepare_data,
-        select_gen_b_quarks_from_higgs,
-        apply_custom_cuts,
-        one_hot_encode_l1_puppi,
-    )
-    from evaluation.jet_matching import get_purity_mask_cross_matched
-    from evaluation.dihiggs import (
-        pair_from_4jets,
-        find_gen_b_pairs_with_indices,
-        R_hh_func,
-        compute_significance_at_luminosity,
-    )
-
     # Configuration
     apply_pt_correction = True
 
@@ -3449,6 +3457,7 @@ def main():
     )
     _sig_lead_m = ak.to_numpy(sig_lead_all.mass) if n_sig_4jet > 0 else np.array([])
     _sig_sub_m = ak.to_numpy(sig_sub_all.mass) if n_sig_4jet > 0 else np.array([])
+    _sig_hh_m = ak.to_numpy(sig_hh_all.mass) if n_sig_4jet > 0 else np.array([])
     _qcd_lead_m = (
         ak.to_numpy(qcd_lead_all.mass) if n_qcd_4jet_total > 0 else np.array([])
     )
@@ -3694,8 +3703,6 @@ def main():
     print(f"{'='*60}")
 
     # ── Cell 23: Top-N jet purity efficiency ─────────────────────────
-    from evaluation.jet_matching import get_pure_jet_idxs_cross_matched
-
     def get_eff_first_jet_pure(gen_b_quarks, reco_jets, tagger_name, n, k):
         pt_ordered = reco_jets[ak.argsort(reco_jets.vector.pt, ascending=False)]
         tag_ordered = reco_jets[ak.argsort(reco_jets[tagger_name], ascending=False)]
@@ -3784,8 +3791,6 @@ def main():
     plt.close(fig_eff_btag)
 
     # ── Cell 24: Di-Higgs mass distribution plots ────────────────────
-    from matplotlib.patches import Ellipse
-
     res = part_dihiggs_result
     label = res["label"]
     color_dh = "purple"
@@ -3992,9 +3997,6 @@ def main():
     )
     print("-" * 90)
     if res["n_signal"] > 0 and res["n_qcd"] > 0:
-        from evaluation.dihiggs import compute_significance_at_luminosity
-        from evaluation.luminosity import signal_weight, scale_qcd_weights_raw
-
         sigma_to_ngen = res.get("sigma_to_ngen", {})
         sig_mh1 = ak.to_numpy(res["sig_lead"].mass)
         sig_mh2 = ak.to_numpy(res["sig_sub"].mass)
@@ -4207,9 +4209,6 @@ def main():
     #   sig_lead_m = c["sig_lead_m_wp"]; sig_sub_m = c["sig_sub_m_wp"]
     #   qcd_lead_m = c["qcd_lead_m_wp"]; qcd_weights_raw = c["qcd_weights_wp"]
     # ============================================================
-    import os
-    import numpy as np
-
     _res = part_dihiggs_result
     _cache_fname = f"dihiggs_result_{collection_key}_{WP_SELECTION}.npz"
     _cache_path = os.path.join(plot_dir, _cache_fname)
@@ -4279,21 +4278,7 @@ def main():
         f"  Pair efficiency    : {_res['pair_eff']:.2%}  (+swap {_res['eff_swapped']:.2%})"
     )
 
-    if till_dhh:
-        print(
-            "Paireed di-Higgs reconstruction complete. Skipping attention analysis as requested."
-        )
-
     # ── Cell 25: Attention map visualization & pairwise feature analysis ──
-    import torch.nn as nn
-    from evaluation.attention import (
-        compute_pairwise_features,
-        AttentionHook,
-        forward_with_attention,
-        forward_with_activations,
-        compute_separability,
-    )
-
     print("=" * 60)
     print("ATTENTION & PAIRWISE FEATURE ANALYSIS")
     print("=" * 60)
@@ -4457,8 +4442,6 @@ def main():
 
     # Class attention colored by particle type (notebook parity)
     if all_constituents.shape[2] > 12:
-        from matplotlib.patches import Patch
-
         fig, axes = plt.subplots(2, n_samples_attn, figsize=(4 * n_samples_attn, 8))
         sample_particle_types = np.argmax(
             all_constituents[sample_indices_attn, :, 12:17].numpy(), axis=-1
@@ -4844,10 +4827,6 @@ def main():
     print(f"{'='*60}")
 
     # ── Cell 26: Layer activation visualization ───────────────────────
-    from sklearn.manifold import TSNE
-    from sklearn.decomposition import PCA
-    import torch.nn.functional as F
-
     print("=" * 60)
     print("LAYER ACTIVATION ANALYSIS")
     print("=" * 60)
@@ -5432,9 +5411,6 @@ def main():
     print(f"{'='*60}")
 
     # ── Cell 27: Feature importance analysis ──────────────────────────
-    from sklearn.metrics import roc_auc_score as roc_auc_score_fi
-    from scipy.stats import ks_2samp
-
     print("=" * 90)
     print(
         "FEATURE IMPORTANCE (STRATIFIED + ROC-CONSISTENT WEIGHTS + CLASS-CONDITIONAL PERM)"
@@ -5538,8 +5514,12 @@ def main():
     model.eval()
     with torch.no_grad():
         baseline_logits = model(perm_x, particle_mask=perm_mask)["classification"]
-        baseline_scores = torch.sigmoid(baseline_logits).squeeze().detach().cpu().numpy()
-    baseline_auc = roc_auc_score_fi(perm_labels, baseline_scores, sample_weight=perm_weights)
+        baseline_scores = (
+            torch.sigmoid(baseline_logits).squeeze().detach().cpu().numpy()
+        )
+    baseline_auc = roc_auc_score_fi(
+        perm_labels, baseline_scores, sample_weight=perm_weights
+    )
     print(f"Baseline weighted AUC: {baseline_auc:.4f}")
 
     n_features = min(len(input_feature_names), perm_x.shape[2])
@@ -5575,7 +5555,9 @@ def main():
 
         grad_importance[f] = float(np.mean(all_vals)) if len(all_vals) else 0.0
         grad_importance_signal[f] = float(np.mean(sig_vals)) if len(sig_vals) else 0.0
-        grad_importance_background[f] = float(np.mean(bkg_vals)) if len(bkg_vals) else 0.0
+        grad_importance_background[f] = (
+            float(np.mean(bkg_vals)) if len(bkg_vals) else 0.0
+        )
 
     def _safe_norm(v):
         s = float(np.sum(v))
@@ -5598,10 +5580,14 @@ def main():
             x_p = perm_x.clone()
 
             if sig_rows_t.numel() > 1:
-                p_sig = sig_rows_t[torch.randperm(sig_rows_t.numel(), device=perm_x.device)]
+                p_sig = sig_rows_t[
+                    torch.randperm(sig_rows_t.numel(), device=perm_x.device)
+                ]
                 x_p[sig_rows_t, :, f] = perm_x[p_sig, :, f]
             if bkg_rows_t.numel() > 1:
-                p_bkg = bkg_rows_t[torch.randperm(bkg_rows_t.numel(), device=perm_x.device)]
+                p_bkg = bkg_rows_t[
+                    torch.randperm(bkg_rows_t.numel(), device=perm_x.device)
+                ]
                 x_p[bkg_rows_t, :, f] = perm_x[p_bkg, :, f]
 
             eval_mask = perm_mask if f != 1 else (x_p[:, :, 1] > 0)
@@ -5698,7 +5684,9 @@ def main():
     # Plot A: Gradient importance
     idx = np.argsort(grad_importance[:n_plot])[::-1]
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.barh(np.arange(n_plot), grad_importance[:n_plot][idx], color="steelblue", alpha=0.85)
+    ax.barh(
+        np.arange(n_plot), grad_importance[:n_plot][idx], color="steelblue", alpha=0.85
+    )
     ax.set_yticks(np.arange(n_plot))
     ax.set_yticklabels([rf"${names[i]}$" for i in idx])
     ax.set_xlabel("Normalized Mean |Gradient|")
@@ -5746,7 +5734,9 @@ def main():
     # Plot D: Fisher
     idx = np.argsort(fisher_scores[:n_plot])[::-1]
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.barh(np.arange(n_plot), fisher_scores[:n_plot][idx], color="darkorange", alpha=0.85)
+    ax.barh(
+        np.arange(n_plot), fisher_scores[:n_plot][idx], color="darkorange", alpha=0.85
+    )
     ax.set_yticks(np.arange(n_plot))
     ax.set_yticklabels([rf"${names[i]}$" for i in idx])
     ax.set_xlabel("Fisher Discriminant Ratio")
@@ -5861,26 +5851,36 @@ def main():
         for _ in range(N_PERMUTATIONS):
             x_cc = perm_x.clone()
             if sig_rows_t.numel() > 1:
-                p_sig = sig_rows_t[torch.randperm(sig_rows_t.numel(), device=perm_x.device)]
+                p_sig = sig_rows_t[
+                    torch.randperm(sig_rows_t.numel(), device=perm_x.device)
+                ]
                 x_cc[sig_rows_t, :, dxy_idx] = perm_x[p_sig, :, dxy_idx]
             if bkg_rows_t.numel() > 1:
-                p_bkg = bkg_rows_t[torch.randperm(bkg_rows_t.numel(), device=perm_x.device)]
+                p_bkg = bkg_rows_t[
+                    torch.randperm(bkg_rows_t.numel(), device=perm_x.device)
+                ]
                 x_cc[bkg_rows_t, :, dxy_idx] = perm_x[p_bkg, :, dxy_idx]
             with torch.no_grad():
                 sc = (
-                    torch.sigmoid(model(x_cc, particle_mask=perm_mask)["classification"])
+                    torch.sigmoid(
+                        model(x_cc, particle_mask=perm_mask)["classification"]
+                    )
                     .squeeze()
                     .detach()
                     .cpu()
                     .numpy()
                 )
-            cc_aucs.append(roc_auc_score_fi(perm_labels, sc, sample_weight=perm_weights))
+            cc_aucs.append(
+                roc_auc_score_fi(perm_labels, sc, sample_weight=perm_weights)
+            )
 
         n_legacy = min(1000, len(all_constituents))
         x_legacy = all_constituents[:n_legacy].float().to(device)
         m_legacy = x_legacy[:, :, 1] > 0
         y_legacy = np.asarray(all_labels[:n_legacy]).astype(int).reshape(-1)
-        w_legacy = np.asarray(all_qcd_weights_val[:n_legacy]).reshape(-1).astype(np.float64)
+        w_legacy = (
+            np.asarray(all_qcd_weights_val[:n_legacy]).reshape(-1).astype(np.float64)
+        )
 
         with torch.no_grad():
             s_legacy = (
@@ -5896,13 +5896,17 @@ def main():
         x_legacy_zero[:, :, dxy_idx] = 0.0
         with torch.no_grad():
             s_legacy_zero = (
-                torch.sigmoid(model(x_legacy_zero, particle_mask=m_legacy)["classification"])
+                torch.sigmoid(
+                    model(x_legacy_zero, particle_mask=m_legacy)["classification"]
+                )
                 .squeeze()
                 .detach()
                 .cpu()
                 .numpy()
             )
-        auc_legacy_zero = roc_auc_score_fi(y_legacy, s_legacy_zero, sample_weight=w_legacy)
+        auc_legacy_zero = roc_auc_score_fi(
+            y_legacy, s_legacy_zero, sample_weight=w_legacy
+        )
 
         wl_sum = float(np.sum(w_legacy))
         wl2_sum = float(np.sum(np.square(w_legacy)))
@@ -6013,7 +6017,11 @@ def main():
                     with torch.no_grad():
                         eval_mask = perm_mask if f_idx != 1 else (x_perm_t[:, :, 1] > 0)
                         s_perm_t = (
-                            torch.sigmoid(model(x_perm_t, particle_mask=eval_mask)["classification"])
+                            torch.sigmoid(
+                                model(x_perm_t, particle_mask=eval_mask)[
+                                    "classification"
+                                ]
+                            )
                             .squeeze()
                             .cpu()
                             .numpy()
@@ -6033,7 +6041,9 @@ def main():
                 with torch.no_grad():
                     eval_mask = perm_mask if f_idx != 1 else (x_zero_t[:, :, 1] > 0)
                     s_zero_t = (
-                        torch.sigmoid(model(x_zero_t, particle_mask=eval_mask)["classification"])
+                        torch.sigmoid(
+                            model(x_zero_t, particle_mask=eval_mask)["classification"]
+                        )
                         .squeeze()
                         .cpu()
                         .numpy()
@@ -6133,10 +6143,16 @@ def main():
             p_top = np.argsort(perm_by_type[pid])[::-1][:3]
             a_top = np.argsort(abla_by_type[pid])[::-1][:3]
             p_txt = ", ".join(
-                [f"{type_feature_names[i]} ({perm_by_type[pid, i]:+.4f})" for i in p_top]
+                [
+                    f"{type_feature_names[i]} ({perm_by_type[pid, i]:+.4f})"
+                    for i in p_top
+                ]
             )
             a_txt = ", ".join(
-                [f"{type_feature_names[i]} ({abla_by_type[pid, i]:+.4f})" for i in a_top]
+                [
+                    f"{type_feature_names[i]} ({abla_by_type[pid, i]:+.4f})"
+                    for i in a_top
+                ]
             )
             print(f"  {ptype_names[pid]}:")
             print(f"    Permute: {p_txt}")
@@ -6170,12 +6186,6 @@ def main():
     print(f"{'='*60}")
 
     # ── Cell 28: Model behavior analysis & maximum discriminative power ──
-    from sklearn.neighbors import KNeighborsClassifier
-    from sklearn.calibration import calibration_curve
-    from sklearn.metrics import brier_score_loss, log_loss
-    from scipy.stats import entropy as sp_entropy
-    from scipy.stats import gaussian_kde
-
     print("=" * 70)
     print("MODEL BEHAVIOR ANALYSIS & MAXIMUM DISCRIMINATIVE POWER ESTIMATION")
     print("=" * 70)
