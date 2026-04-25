@@ -30,7 +30,11 @@ plt.rcParams.update(
         "grid.alpha": 0.6,
         "grid.linestyle": "--",
         "font.size": 14,
-        "figure.dpi": 200,
+        "figure.dpi": 400,
+        "figure.facecolor": "none",
+        "axes.facecolor": "white",
+        "font.family": "serif",
+        "font.serif": ["Times New Roman", "serif"],
     }
 )
 
@@ -192,23 +196,29 @@ def main():
             val_split=config_part["training"]["data"]["val_split"],
             batch_size=config_part["training"]["batch_size"],
             match_mode=config_part["training"]["data"]["match_mode"],
-            num_workers=config_part["training"]["data"]["num_workers"],
+            num_workers=4,
             random_state=42,
             pt_regression=pt_regression,
         )
         if config_part["training"]["data"]["use_dataset"] == "pf":
             print("\nUsing PF dataset for training.")
             (
-                train_loader, train_indices,
-                val_loader, val_indices,
-                train_labels, val_labels,
+                train_loader,
+                train_indices,
+                val_loader,
+                val_indices,
+                train_labels,
+                val_labels,
             ) = combined_loader.get_pf_loaders(shuffle=True)
         elif config_part["training"]["data"]["use_dataset"] == "puppi":
             print("\nUsing PUPPI dataset for training.")
             (
-                train_loader, train_indices,
-                val_loader, val_indices,
-                train_labels, val_labels,
+                train_loader,
+                train_indices,
+                val_loader,
+                val_indices,
+                train_labels,
+                val_labels,
             ) = combined_loader.get_puppi_loaders(shuffle=True)
         print(
             f"Data loaders prepared with {len(train_loader.dataset)} training samples "
@@ -241,7 +251,7 @@ def main():
     model.eval()
     all_outputs = []
     all_labels = []
-    
+
     val_jet_pt_list = []
     val_jet_eta_list = []
     val_jet_phi_list = []
@@ -258,11 +268,17 @@ def main():
     all_weights_val = []  # Kinematic reweighting weights from dataset (for training)
     all_qcd_weights_val = []  # QCD cross-section weights (for testing metrics)
 
-
     with torch.no_grad():
-        for X_batch, y_batch, mask_batch, weights_batch, jet_pt_batch, _, gen_pt_batch, qcd_weights_batch in tqdm(
-            val_loader, desc="Validation inference"
-        ):
+        for (
+            X_batch,
+            y_batch,
+            mask_batch,
+            weights_batch,
+            jet_pt_batch,
+            _,
+            gen_pt_batch,
+            qcd_weights_batch,
+        ) in tqdm(val_loader, desc="Validation inference"):
             if n_constituents_model is None:
                 n_constituents_model = int(X_batch.shape[1])
 
@@ -281,7 +297,7 @@ def main():
             all_gen_pt_val.append(gen_pt_batch.squeeze().cpu().numpy())
             all_weights_val.append(weights_batch.squeeze().cpu().numpy())
             all_qcd_weights_val.append(qcd_weights_batch.squeeze().cpu().numpy())
-            
+
             # Reconstruct jet 4-vectors locally to save memory
             X_cpu = X_batch.cpu().numpy()
             const_mass_b = X_cpu[:, :, 0]
@@ -289,17 +305,22 @@ def main():
             const_eta_b = X_cpu[:, :, 2]
             const_phi_b = X_cpu[:, :, 3]
             const_vectors_b = vector.array(
-                {"pt": const_pt_b, "eta": const_eta_b, "phi": const_phi_b, "mass": const_mass_b}
+                {
+                    "pt": const_pt_b,
+                    "eta": const_eta_b,
+                    "phi": const_phi_b,
+                    "mass": const_mass_b,
+                }
             )
             jet_vectors_b = const_vectors_b.sum(axis=1)
-            
+
             val_jet_pt_list.append(jet_vectors_b.pt)
             val_jet_eta_list.append(jet_vectors_b.eta)
             val_jet_phi_list.append(jet_vectors_b.phi)
             val_jet_mass_list.append(jet_vectors_b.mass)
-            
+
             val_n_const_list.append((X_cpu[:, :, 1] > 0).sum(axis=1))
-            
+
             if collect_all_constituents:
                 all_constituents.append(X_batch.half().cpu())
 
@@ -319,7 +340,7 @@ def main():
         all_constituents = torch.cat(all_constituents)
     else:
         all_constituents = None
-    
+
     val_jet_pt = np.concatenate(val_jet_pt_list)
     val_jet_eta = np.concatenate(val_jet_eta_list)
     val_jet_phi = np.concatenate(val_jet_phi_list)
@@ -335,8 +356,12 @@ def main():
     if has_quantile:
         all_quantiles = np.concatenate(all_quantiles)
         print(f"Quantile regression outputs collected: {all_quantiles.shape}")
-        print(f"  q16 range: {all_quantiles[:, 0].min():.4f} – {all_quantiles[:, 0].max():.4f}")
-        print(f"  q84 range: {all_quantiles[:, 1].min():.4f} – {all_quantiles[:, 1].max():.4f}")
+        print(
+            f"  q16 range: {all_quantiles[:, 0].min():.4f} – {all_quantiles[:, 0].max():.4f}"
+        )
+        print(
+            f"  q84 range: {all_quantiles[:, 1].min():.4f} – {all_quantiles[:, 1].max():.4f}"
+        )
     else:
         print("No quantile regression head in this model.")
 
@@ -368,7 +393,9 @@ def main():
     # Helper: set up plot output directory
 
     run_id = config_part.get("exp_name", "unknown_run").replace("/", "_")
-    artifact_name = CONFIG_PART.get("wandb", {}).get("artifact_name", "unknown_artifact")
+    artifact_name = CONFIG_PART.get("wandb", {}).get(
+        "artifact_name", "unknown_artifact"
+    )
     artifact_type = CONFIG_PART.get("wandb", {}).get("ckpt_type", "unknown_type")
     plot_dir = f"../Updates/plots_{run_id}/{artifact_name}:{artifact_type}"
     os.makedirs(plot_dir, exist_ok=True)
@@ -390,11 +417,19 @@ def main():
     if has_regression:
         reg_pt = all_reg_pt
         print(f"\nRegression output (signal only):")
-        print(f"  reg_pt  range: {reg_pt[signal_mask].min():.2f} – {reg_pt[signal_mask].max():.2f}")
-        print(f"  jet_pt  range: {jet_pt[signal_mask].min():.2f} – {jet_pt[signal_mask].max():.2f}")
-        print(f"  gen_pt  range: {gen_pt[signal_mask].min():.2f} – {gen_pt[signal_mask].max():.2f}")
+        print(
+            f"  reg_pt  range: {reg_pt[signal_mask].min():.2f} – {reg_pt[signal_mask].max():.2f}"
+        )
+        print(
+            f"  jet_pt  range: {jet_pt[signal_mask].min():.2f} – {jet_pt[signal_mask].max():.2f}"
+        )
+        print(
+            f"  gen_pt  range: {gen_pt[signal_mask].min():.2f} – {gen_pt[signal_mask].max():.2f}"
+        )
         correction = gen_pt[signal_mask] / (jet_pt[signal_mask] + 1e-9)
-        print(f"  Correction factor (gen_pt / jet_pt) range: {correction.min():.3f} – {correction.max():.3f}")
+        print(
+            f"  Correction factor (gen_pt / jet_pt) range: {correction.min():.3f} – {correction.max():.3f}"
+        )
     else:
         print("\nNo regression head in this model.")
 
@@ -402,8 +437,22 @@ def main():
 
     # 1. jet_pt distribution (signal vs background)
     ax = axes[0, 0]
-    ax.hist(jet_pt[signal_mask], bins=60, range=(0, 500), histtype="step", density=True, label="Signal")
-    ax.hist(jet_pt[~signal_mask], bins=60, range=(0, 500), histtype="step", density=True, label="Background")
+    ax.hist(
+        jet_pt[signal_mask],
+        bins=60,
+        range=(0, 500),
+        histtype="step",
+        density=True,
+        label="Signal",
+    )
+    ax.hist(
+        jet_pt[~signal_mask],
+        bins=60,
+        range=(0, 500),
+        histtype="step",
+        density=True,
+        label="Background",
+    )
     ax.set_xlabel("Reco jet $p_T$ [GeV]")
     ax.set_ylabel("Density")
     ax.set_title("Reco jet $p_T$ distribution")
@@ -411,7 +460,14 @@ def main():
 
     # 2. gen_pt distribution (signal only)
     ax = axes[0, 1]
-    ax.hist(gen_pt[signal_mask], bins=60, range=(0, 500), histtype="step", density=True, color="C0")
+    ax.hist(
+        gen_pt[signal_mask],
+        bins=60,
+        range=(0, 500),
+        histtype="step",
+        density=True,
+        color="C0",
+    )
     ax.set_xlabel("Gen $p_T$ [GeV]")
     ax.set_ylabel("Density")
     ax.set_title("Gen $p_T$ (signal jets only)")
@@ -419,7 +475,9 @@ def main():
     # 3. Correction factor (signal only)
     ax = axes[0, 2]
     correction = gen_pt[signal_mask] / (jet_pt[signal_mask] + 1e-9)
-    ax.hist(correction, bins=60, range=(0, 3), histtype="step", density=True, color="C2")
+    ax.hist(
+        correction, bins=60, range=(0, 3), histtype="step", density=True, color="C2"
+    )
     ax.axvline(1.0, color="gray", linestyle="--", alpha=0.7, label="No correction")
     ax.set_xlabel("gen $p_T$ / reco $p_T$")
     ax.set_ylabel("Density")
@@ -429,8 +487,16 @@ def main():
     if has_regression:
         # 4. Regression output distribution
         ax = axes[1, 0]
-        ax.hist(reg_pt[signal_mask], bins=60, histtype="step", density=True, label="Signal")
-        ax.hist(reg_pt[~signal_mask], bins=60, histtype="step", density=True, label="Background")
+        ax.hist(
+            reg_pt[signal_mask], bins=60, histtype="step", density=True, label="Signal"
+        )
+        ax.hist(
+            reg_pt[~signal_mask],
+            bins=60,
+            histtype="step",
+            density=True,
+            label="Background",
+        )
         ax.set_xlabel("Regression output (predicted correction)")
         ax.set_ylabel("Density")
         ax.set_title("Regression head output")
@@ -453,7 +519,14 @@ def main():
         ax = axes[1, 2]
         corrected_pt = jet_pt[signal_mask] * pred_corr
         ax.scatter(gen_pt[signal_mask], corrected_pt, s=1, alpha=0.3, label="Corrected")
-        ax.scatter(gen_pt[signal_mask], jet_pt[signal_mask], s=1, alpha=0.1, color="gray", label="Uncorrected")
+        ax.scatter(
+            gen_pt[signal_mask],
+            jet_pt[signal_mask],
+            s=1,
+            alpha=0.1,
+            color="gray",
+            label="Uncorrected",
+        )
         lim = 500
         ax.plot([0, lim], [0, lim], "r--", alpha=0.5)
         ax.set_xlim(0, lim)
@@ -464,7 +537,14 @@ def main():
         ax.legend()
     else:
         for i in range(3):
-            axes[1, i].text(0.5, 0.5, "No regression head", ha="center", va="center", transform=axes[1, i].transAxes)
+            axes[1, i].text(
+                0.5,
+                0.5,
+                "No regression head",
+                ha="center",
+                va="center",
+                transform=axes[1, i].transAxes,
+            )
             axes[1, i].set_axis_off()
 
     plt.tight_layout()
@@ -474,7 +554,7 @@ def main():
     # ── Cell 6: Training data loading & jet kinematics ────────────────
     all_labels_train = []
     all_weights_train = []
-    
+
     train_jet_pt_list = []
     train_jet_eta_list = []
     train_jet_phi_list = []
@@ -486,18 +566,23 @@ def main():
     ):
         all_labels_train.append(y_batch.squeeze(-1).cpu().numpy())
         all_weights_train.append(weights_batch.cpu().numpy())
-        
+
         X_cpu = X_batch.cpu().numpy()
         const_mass_train = X_cpu[:, :, 0]
         const_pt_train = X_cpu[:, :, 1]
         const_eta_train = X_cpu[:, :, 2]
         const_phi_train = X_cpu[:, :, 3]
-        
+
         const_vectors_train = vector.array(
-            {"pt": const_pt_train, "eta": const_eta_train, "phi": const_phi_train, "mass": const_mass_train}
+            {
+                "pt": const_pt_train,
+                "eta": const_eta_train,
+                "phi": const_phi_train,
+                "mass": const_mass_train,
+            }
         )
         jet_vectors_train = const_vectors_train.sum(axis=1)
-        
+
         train_jet_pt_list.append(jet_vectors_train.pt)
         train_jet_eta_list.append(jet_vectors_train.eta)
         train_jet_phi_list.append(jet_vectors_train.phi)
@@ -516,10 +601,38 @@ def main():
     # ── Cell 7: Train vs Val comparison plots ─────────────────────────
     # 1. Train vs Val jet pT
     fig, ax = plt.subplots()
-    ax.hist(train_jet_pt[all_labels_train == 1], bins=50, range=(0, 500), density=True, alpha=0.5, label="Train Signal")
-    ax.hist(train_jet_pt[all_labels_train == 0], bins=50, range=(0, 500), density=True, alpha=0.5, label="Train Background")
-    ax.hist(val_jet_pt[all_labels.reshape(all_labels.shape[0]) == 1], bins=50, range=(0, 500), density=True, histtype="step", label="Val Signal")
-    ax.hist(val_jet_pt[all_labels.reshape(all_labels.shape[0]) == 0], bins=50, range=(0, 500), density=True, histtype="step", label="Val Background")
+    ax.hist(
+        train_jet_pt[all_labels_train == 1],
+        bins=50,
+        range=(0, 500),
+        density=True,
+        alpha=0.5,
+        label="Train Signal",
+    )
+    ax.hist(
+        train_jet_pt[all_labels_train == 0],
+        bins=50,
+        range=(0, 500),
+        density=True,
+        alpha=0.5,
+        label="Train Background",
+    )
+    ax.hist(
+        val_jet_pt[all_labels.reshape(all_labels.shape[0]) == 1],
+        bins=50,
+        range=(0, 500),
+        density=True,
+        histtype="step",
+        label="Val Signal",
+    )
+    ax.hist(
+        val_jet_pt[all_labels.reshape(all_labels.shape[0]) == 0],
+        bins=50,
+        range=(0, 500),
+        density=True,
+        histtype="step",
+        label="Val Background",
+    )
     ax.set_xlabel("Jet $p_T$ [GeV]")
     ax.set_ylabel("Normalized Entries")
     ax.set_title("Jet $p_T$ Distribution: Train vs Val")
@@ -529,8 +642,24 @@ def main():
 
     # 2. Reweighted training pT
     fig, ax = plt.subplots()
-    ax.hist(train_jet_pt[all_labels_train == 1], bins=50, range=(0, 500), weights=all_weights_train[all_labels_train == 1], density=True, alpha=0.5, label="Reweighted Train Signal")
-    ax.hist(train_jet_pt[all_labels_train == 0], bins=50, range=(0, 500), weights=all_weights_train[all_labels_train == 0], density=True, alpha=0.5, label="Reweighted Train Background")
+    ax.hist(
+        train_jet_pt[all_labels_train == 1],
+        bins=50,
+        range=(0, 500),
+        weights=all_weights_train[all_labels_train == 1],
+        density=True,
+        alpha=0.5,
+        label="Reweighted Train Signal",
+    )
+    ax.hist(
+        train_jet_pt[all_labels_train == 0],
+        bins=50,
+        range=(0, 500),
+        weights=all_weights_train[all_labels_train == 0],
+        density=True,
+        alpha=0.5,
+        label="Reweighted Train Background",
+    )
     ax.set_xlabel("Jet $p_T$ [GeV]")
     ax.set_ylabel("Normalized Entries")
     ax.set_title("Reweighted Jet $p_T$ Distribution: Train Set")
@@ -540,8 +669,24 @@ def main():
 
     # 3. Reweighted training eta
     fig, ax = plt.subplots()
-    ax.hist(train_jet_eta[all_labels_train == 1], bins=50, range=(-3, 3), weights=all_weights_train[all_labels_train == 1], density=True, alpha=0.5, label="Reweighted Train Signal")
-    ax.hist(train_jet_eta[all_labels_train == 0], bins=50, range=(-3, 3), weights=all_weights_train[all_labels_train == 0], density=True, alpha=0.5, label="Reweighted Train Background")
+    ax.hist(
+        train_jet_eta[all_labels_train == 1],
+        bins=50,
+        range=(-3, 3),
+        weights=all_weights_train[all_labels_train == 1],
+        density=True,
+        alpha=0.5,
+        label="Reweighted Train Signal",
+    )
+    ax.hist(
+        train_jet_eta[all_labels_train == 0],
+        bins=50,
+        range=(-3, 3),
+        weights=all_weights_train[all_labels_train == 0],
+        density=True,
+        alpha=0.5,
+        label="Reweighted Train Background",
+    )
     ax.set_xlabel("Jet $\\eta$")
     ax.set_ylabel("Normalized Entries")
     ax.set_title("Reweighted Jet $\\eta$ Distribution: Train Set")
@@ -639,6 +784,7 @@ def main():
     # Reference tagger ROC from cache
     tagger_cache_map = {
         "Offline PNet": "Offline_PNet",
+        "Offline UParT": "Offline_UPart",
         "L1NG": "L1NG",
         "L1Ext": "L1Ext",
     }
@@ -842,8 +988,12 @@ def main():
     jet_eta_cuts = val_jet_eta[val_cuts_mask]
 
     # 1) Precision-Recall curve
-    precision, recall, pr_thresholds = precision_recall_curve(labels, scores, sample_weight=all_weights_after_cuts)
-    pr_auc = average_precision_score(labels, scores, sample_weight=all_weights_after_cuts)
+    precision, recall, pr_thresholds = precision_recall_curve(
+        labels, scores, sample_weight=all_weights_after_cuts
+    )
+    pr_auc = average_precision_score(
+        labels, scores, sample_weight=all_weights_after_cuts
+    )
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(recall, precision, color="purple")
     ax.set_xlabel("Recall (Signal Efficiency)")
@@ -876,7 +1026,6 @@ def main():
     eta_bins_eff = [0.0, 0.5, 1.0, 1.5, 2.4]
     working_points = pnet_wps
 
-
     for wp in working_points:
         df = efficiency_table(
             pt_bins_eff,
@@ -893,7 +1042,16 @@ def main():
 
     # 4) PR-AUC and optimal S/√B per kinematic bin
 
-    df_pr_srb = pr_auc_and_opt_s_over_root_b(pt_bins_eff, eta_bins_eff, labels, scores, jet_pt_cuts, jet_eta_cuts, thr, sample_weights=all_weights_after_cuts)
+    df_pr_srb = pr_auc_and_opt_s_over_root_b(
+        pt_bins_eff,
+        eta_bins_eff,
+        labels,
+        scores,
+        jet_pt_cuts,
+        jet_eta_cuts,
+        thr,
+        sample_weights=all_weights_after_cuts,
+    )
     print("\nPer-bin PR-AUC and optimal S/sqrt(B)")
     print(df_pr_srb.to_string())
 
@@ -903,7 +1061,9 @@ def main():
     pt_cut_for_prsig = cache_pt_cut_gev if "cache_pt_cut_gev" in locals() else 25.0
 
     if "_sigma_to_ngen" not in locals():
-        _sigma_to_ngen = {b["weight"]: b["n_gen"] for b in config["QCD_background"].values()}
+        _sigma_to_ngen = {
+            b["weight"]: b["n_gen"] for b in config["QCD_background"].values()
+        }
     if "_luminosity_fb" not in locals():
         _luminosity_fb = config["physics"]["luminosity_fb"]
     if "_signal_xsec_pb" not in locals():
@@ -923,6 +1083,7 @@ def main():
 
     tagger_cache_map_prsig = {
         "Offline PNet": "Offline_PNet",
+        "Offline UParT": "Offline_UPart",
         "L1NG": "L1NG",
         "L1Ext": "L1Ext",
     }
@@ -1168,7 +1329,9 @@ def main():
         axes[0, -1].legend(loc="lower left", fontsize=9)
         axes[1, -1].legend(loc="upper right", fontsize=8)
 
-        pt_cut_text = "None" if pt_cut_for_prsig is None else f"{pt_cut_for_prsig:.1f} GeV"
+        pt_cut_text = (
+            "None" if pt_cut_for_prsig is None else f"{pt_cut_for_prsig:.1f} GeV"
+        )
         fig.suptitle(
             (
                 "PR (class-normalized) and significance (physics-weighted) "
@@ -1192,7 +1355,9 @@ def main():
                     f"thr={res_mode['best_threshold']:.3f}"
                 )
     else:
-        print("Skipping PR/significance mode comparison due to missing signal or background samples.")
+        print(
+            "Skipping PR/significance mode comparison due to missing signal or background samples."
+        )
 
     del cache_prsig
 
@@ -1207,17 +1372,26 @@ def main():
     # ── Cell 10: Load full dataset for constituent analysis ───────────
     data_path = config_part.get("data_path")
     if data_path is None or not os.path.exists(data_path):
-        dataset_used = config_part.get("training", {}).get("data", {}).get("use_dataset", "pf")
+        dataset_used = (
+            config_part.get("training", {}).get("data", {}).get("use_dataset", "pf")
+        )
         # In case "both" was used, default to "pf" for constituent analysis
-        if dataset_used == "both": dataset_used = "pf"
-        data_path = config_part.get("training", {}).get("data", {}).get(f"{dataset_used}_data_path")
+        if dataset_used == "both":
+            dataset_used = "pf"
+        data_path = (
+            config_part.get("training", {})
+            .get("data", {})
+            .get(f"{dataset_used}_data_path")
+        )
 
     if os.path.isdir(data_path):
         pt_regression = config_part.get("model", {}).get("pt_regression", False)
-        full_dataset = StratifiedJetDataset(filepath=data_path, pt_regression=pt_regression)
+        full_dataset = StratifiedJetDataset(
+            filepath=data_path, pt_regression=pt_regression
+        )
     else:
         full_dataset = L1JetDataset(filepath=data_path)
-        
+
     n_total = len(full_dataset)
     BATCH_SIZE = 10000
 
@@ -1233,7 +1407,7 @@ def main():
             x_b, y_b, m_b = batch[0], batch[1], batch[2]
         else:
             x_b, y_b, m_b, _ = full_dataset[start:end]
-            
+
         x_chunks.append(x_b.numpy())
         y_chunks.append(y_b.numpy())
         mask_chunks.append(m_b.numpy())
@@ -1253,18 +1427,39 @@ def main():
     const_phi_full = x_full[:, :, 3]
 
     const_vectors_full = vector.array(
-        {"pt": const_pt_full, "eta": const_eta_full, "phi": const_phi_full, "mass": const_mass_full}
+        {
+            "pt": const_pt_full,
+            "eta": const_eta_full,
+            "phi": const_phi_full,
+            "mass": const_mass_full,
+        }
     )
     jet_vectors_full = const_vectors_full.sum(axis=1)
 
     feature_names = [
-        "Mass", "Pt", "Eta", "Phi", "Dxy", "Z0", "Charge",
-        "Log Pt Rel", "Delta Eta", "Delta Phi", "PUPPI weight", "Log Delta R",
+        "Mass",
+        "Pt",
+        "Eta",
+        "Phi",
+        "Dxy",
+        "Z0",
+        "Charge",
+        "Log Pt Rel",
+        "Delta Eta",
+        "Delta Phi",
+        "PUPPI weight",
+        "Log Delta R",
     ]
     x_features = x_full[:, :, : len(feature_names)]
 
     # Notebook parity: decode one-hot particle IDs (features 12:17) for type-wise studies.
-    PARTICLE_TYPE_NAMES = ["Charged Hadron", "Electron", "Neutral Hadron", "Photon", "Muon"]
+    PARTICLE_TYPE_NAMES = [
+        "Charged Hadron",
+        "Electron",
+        "Neutral Hadron",
+        "Photon",
+        "Muon",
+    ]
     PARTICLE_TYPE_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
     N_PARTICLE_TYPES = 5
     particle_type_full = None
@@ -1277,7 +1472,9 @@ def main():
         mask_np_full = mask_full.astype(bool)
         particle_type_full[~mask_np_full] = -1
 
-        particle_counts_full = np.zeros((len(x_full), N_PARTICLE_TYPES), dtype=np.uint16)
+        particle_counts_full = np.zeros(
+            (len(x_full), N_PARTICLE_TYPES), dtype=np.uint16
+        )
         for pid in range(N_PARTICLE_TYPES):
             particle_counts_full[:, pid] = (particle_type_full == pid).sum(axis=1)
 
@@ -1289,7 +1486,9 @@ def main():
             frac_pid = 100.0 * count_pid / max(total_valid, 1)
             print(f"  {PARTICLE_TYPE_NAMES[pid]}: {count_pid} ({frac_pid:.1f}%)")
     else:
-        print("WARNING: constituent tensor has <=16 features, particle-type plots are disabled.")
+        print(
+            "WARNING: constituent tensor has <=16 features, particle-type plots are disabled."
+        )
 
     del x_full
 
@@ -1306,7 +1505,10 @@ def main():
     )
 
     offline_jets = apply_custom_cuts(
-        events[config["offline"]["collection_name"]], config, "offline", kinematic_only=True
+        events[config["offline"]["collection_name"]],
+        config,
+        "offline",
+        kinematic_only=True,
     )
     l1ng_jets = apply_custom_cuts(
         events[config["l1ng"]["collection_name"]], config, "l1ng", kinematic_only=True
@@ -1317,20 +1519,43 @@ def main():
     l1ng_pt = ak.to_numpy(ak.flatten(l1ng_jets.pt))
     l1ng_eta = ak.to_numpy(ak.flatten(l1ng_jets.eta))
 
-    print(f"Reconstructed jet pT range: {jet_vectors_full.pt.min():.2f} - {jet_vectors_full.pt.max():.2f} GeV")
-    print(f"Reconstructed jet eta range: {jet_vectors_full.eta.min():.2f} - {jet_vectors_full.eta.max():.2f}")
+    print(
+        f"Reconstructed jet pT range: {jet_vectors_full.pt.min():.2f} - {jet_vectors_full.pt.max():.2f} GeV"
+    )
+    print(
+        f"Reconstructed jet eta range: {jet_vectors_full.eta.min():.2f} - {jet_vectors_full.eta.max():.2f}"
+    )
 
     # ── Cell 11: Generate and save all main plots ─────────────────────
     import seaborn as sns
     from sklearn.metrics import roc_auc_score
-    from evaluation.roc import calculate_trained_roc_2d_bins, calculate_auc_uncertainty_2d_bins
+    from evaluation.roc import (
+        calculate_trained_roc_2d_bins,
+        calculate_auc_uncertainty_2d_bins,
+    )
 
     print(f"Saving plots to: {plot_dir}")
 
     # 1. Model output distribution
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.hist(all_outputs_after_cuts[all_labels_after_cuts == 0], bins=50, range=(0, 1), label="Background", histtype="step", color="red", density=True)
-    ax.hist(all_outputs_after_cuts[all_labels_after_cuts == 1], bins=50, range=(0, 1), label="Signal", histtype="step", color="blue", density=True)
+    ax.hist(
+        all_outputs_after_cuts[all_labels_after_cuts == 0],
+        bins=50,
+        range=(0, 1),
+        label="Background",
+        histtype="step",
+        color="red",
+        density=True,
+    )
+    ax.hist(
+        all_outputs_after_cuts[all_labels_after_cuts == 1],
+        bins=50,
+        range=(0, 1),
+        label="Signal",
+        histtype="step",
+        color="blue",
+        density=True,
+    )
     ax.set_xlabel("Model Output Score")
     ax.set_ylabel("Density")
     ax.set_title("Model Output Distribution on Validation Set")
@@ -1354,16 +1579,28 @@ def main():
         plt.close(fig_roc)
 
     # 3. 2D AUC heatmap
-    pt_ranges = [(25, 100), (100, 200), (200, 300), (300, 400), (400, 500), (500, np.inf), (25, np.inf)]
+    pt_ranges = [
+        (25, 100),
+        (100, 200),
+        (200, 300),
+        (300, 400),
+        (400, 500),
+        (500, np.inf),
+        (25, np.inf),
+    ]
     eta_ranges = [(0, 0.5), (0.5, 1.0), (1.0, 1.5), (1.5, 2.4), (0, 2.4)]
-
 
     val_jet_pt_cuts = val_jet_pt[val_cuts_mask]
     val_jet_eta_cuts = val_jet_eta[val_cuts_mask]
 
     auc_matrix, count_matrix = calculate_trained_roc_2d_bins(
-        pt_ranges, eta_ranges, val_jet_pt_cuts, val_jet_eta_cuts,
-        all_labels_after_cuts, all_outputs_after_cuts, weights=roc_weights,
+        pt_ranges,
+        eta_ranges,
+        val_jet_pt_cuts,
+        val_jet_eta_cuts,
+        all_labels_after_cuts,
+        all_outputs_after_cuts,
+        weights=roc_weights,
     )
 
     pt_labels_hm = [f"[{low},{high})" for low, high in pt_ranges]
@@ -1378,7 +1615,16 @@ def main():
 
     fig, ax = plt.subplots(figsize=(12, 9))
     df_hm = pd.DataFrame(auc_matrix, index=pt_labels_hm, columns=eta_labels_hm)
-    sns.heatmap(df_hm, annot=annot, fmt="", cmap="viridis", vmin=0.5, vmax=1.0, ax=ax, cbar_kws={"label": "AUC"})
+    sns.heatmap(
+        df_hm,
+        annot=annot,
+        fmt="",
+        cmap="viridis",
+        vmin=0.5,
+        vmax=1.0,
+        ax=ax,
+        cbar_kws={"label": "AUC"},
+    )
     ax.set_xlabel(r"$|\eta|$")
     ax.set_ylabel("Jet pT [GeV]")
     ax.set_title(r"Trained ParT: AUC in pT vs $|\eta|$ Bins")
@@ -1389,8 +1635,14 @@ def main():
     # AUC heatmap with bootstrap uncertainties
     print("Computing AUC with bootstrap uncertainties...")
     auc_matrix_u, unc_matrix_u, count_matrix_u = calculate_auc_uncertainty_2d_bins(
-        pt_ranges, eta_ranges, val_jet_pt_cuts, val_jet_eta_cuts,
-        all_labels_after_cuts, all_outputs_after_cuts, weights=roc_weights, n_boot=50,
+        pt_ranges,
+        eta_ranges,
+        val_jet_pt_cuts,
+        val_jet_eta_cuts,
+        all_labels_after_cuts,
+        all_outputs_after_cuts,
+        weights=roc_weights,
+        n_boot=50,
     )
 
     annot_u = np.empty_like(auc_matrix_u, dtype=object)
@@ -1399,16 +1651,32 @@ def main():
             if np.isnan(auc_matrix_u[i, j]):
                 annot_u[i, j] = f"N={int(count_matrix_u[i, j])}\n(N/A)"
             elif np.isnan(unc_matrix_u[i, j]):
-                annot_u[i, j] = f"{auc_matrix_u[i, j]:.3f}\n(N={int(count_matrix_u[i, j])})"
+                annot_u[i, j] = (
+                    f"{auc_matrix_u[i, j]:.3f}\n(N={int(count_matrix_u[i, j])})"
+                )
             else:
-                annot_u[i, j] = f"{auc_matrix_u[i, j]:.3f}±{unc_matrix_u[i, j]:.3f}\n(N={int(count_matrix_u[i, j])})"
+                annot_u[i, j] = (
+                    f"{auc_matrix_u[i, j]:.3f}±{unc_matrix_u[i, j]:.3f}\n(N={int(count_matrix_u[i, j])})"
+                )
 
     fig_unc, ax_unc = plt.subplots(figsize=(14, 10))
     df_unc = pd.DataFrame(auc_matrix_u, index=pt_labels_hm, columns=eta_labels_hm)
-    sns.heatmap(df_unc, annot=annot_u, fmt="", cmap="viridis", vmin=0.5, vmax=1.0, ax=ax_unc, cbar_kws={"label": "AUC"}, annot_kws={"fontsize": 9})
+    sns.heatmap(
+        df_unc,
+        annot=annot_u,
+        fmt="",
+        cmap="viridis",
+        vmin=0.5,
+        vmax=1.0,
+        ax=ax_unc,
+        cbar_kws={"label": "AUC"},
+        annot_kws={"fontsize": 9},
+    )
     ax_unc.set_xlabel(r"$|\eta|$")
     ax_unc.set_ylabel("Jet pT [GeV]")
-    ax_unc.set_title(r"Trained ParT: AUC with Bootstrap Uncertainty in pT vs $|\eta|$ Bins")
+    ax_unc.set_title(
+        r"Trained ParT: AUC with Bootstrap Uncertainty in pT vs $|\eta|$ Bins"
+    )
     plt.tight_layout()
     save_fig(fig_unc, "auc_heatmap_pt_eta_uncertainty")
     plt.close(fig_unc)
@@ -1421,8 +1689,12 @@ def main():
 
     for i, feat_name in enumerate(feature_names):
         fig, ax = plt.subplots(figsize=(10, 6))
-        sig_mask_2d = (y_full == 1).squeeze()[:, np.newaxis] & mask_np_full if mask_np_full.ndim == 2 else (y_full == 1) & mask_np_full
-        
+        sig_mask_2d = (
+            (y_full == 1).squeeze()[:, np.newaxis] & mask_np_full
+            if mask_np_full.ndim == 2
+            else (y_full == 1) & mask_np_full
+        )
+
         # Handle the case where squeeze might eliminate everything or broadcast is simple
         # Let's be safer: y_full has shape (N,) or (N,1). mask has shape (N, P).
         y_expanded = y_full.reshape(-1, 1)
@@ -1548,7 +1820,9 @@ def main():
             save_fig(fig, f"constituent_{feat_name.lower().replace(' ', '_')}_by_type")
             plt.close(fig)
 
-        print(f"  Saved {len(feature_names)} constituent feature plots (by particle type)")
+        print(
+            f"  Saved {len(feature_names)} constituent feature plots (by particle type)"
+        )
 
         sig_jets = y_full_flat == 1
         bkg_jets = y_full_flat == 0
@@ -1659,9 +1933,33 @@ def main():
     trained_eta = jet_vectors_full.eta
 
     fig, ax = plt.subplots(figsize=(12, 6))
-    ax.hist(trained_pt, bins=100, range=(0, 500), histtype="step", label=f"Trained AK4 Jets (N={len(trained_pt)})", color="green", density=True)
-    ax.hist(l1ng_pt, bins=100, range=(0, 500), histtype="step", label=f"L1NG Jets (N={len(l1ng_pt)})", color="blue", density=True)
-    ax.hist(offline_pt, bins=100, range=(0, 500), histtype="step", label=f"Offline Jets (N={len(offline_pt)})", color="red", density=True)
+    ax.hist(
+        trained_pt,
+        bins=100,
+        range=(0, 500),
+        histtype="step",
+        label=f"Trained AK4 Jets (N={len(trained_pt)})",
+        color="green",
+        density=True,
+    )
+    ax.hist(
+        l1ng_pt,
+        bins=100,
+        range=(0, 500),
+        histtype="step",
+        label=f"L1NG Jets (N={len(l1ng_pt)})",
+        color="blue",
+        density=True,
+    )
+    ax.hist(
+        offline_pt,
+        bins=100,
+        range=(0, 500),
+        histtype="step",
+        label=f"Offline Jets (N={len(offline_pt)})",
+        color="red",
+        density=True,
+    )
     ax.axvline(25, color="black", linestyle="--", alpha=0.7, label="25 GeV cut")
     ax.set_xlabel("Jet $p_T$ [GeV]")
     ax.set_ylabel("Density")
@@ -1671,9 +1969,33 @@ def main():
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(12, 6))
-    ax.hist(trained_eta, bins=100, range=(-3, 3), histtype="step", label="Trained AK4 Jets", color="green", density=True)
-    ax.hist(l1ng_eta, bins=100, range=(-3, 3), histtype="step", label="L1NG Jets", color="blue", density=True)
-    ax.hist(offline_eta, bins=100, range=(-3, 3), histtype="step", label="Offline Jets", color="red", density=True)
+    ax.hist(
+        trained_eta,
+        bins=100,
+        range=(-3, 3),
+        histtype="step",
+        label="Trained AK4 Jets",
+        color="green",
+        density=True,
+    )
+    ax.hist(
+        l1ng_eta,
+        bins=100,
+        range=(-3, 3),
+        histtype="step",
+        label="L1NG Jets",
+        color="blue",
+        density=True,
+    )
+    ax.hist(
+        offline_eta,
+        bins=100,
+        range=(-3, 3),
+        histtype="step",
+        label="Offline Jets",
+        color="red",
+        density=True,
+    )
     ax.set_xlabel(r"Jet $\eta$")
     ax.set_ylabel("Density")
     ax.set_title(r"Jet $\eta$ Distribution Comparison")
@@ -1684,16 +2006,48 @@ def main():
     # 6. Signal vs background jet kinematics
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
     ax = axes[0]
-    ax.hist(trained_pt[signal_mask_full], bins=50, range=(0, 500), histtype="step", label=f"Signal (N={signal_mask_full.sum()})", color="blue", density=True)
-    ax.hist(trained_pt[background_mask_full], bins=50, range=(0, 500), histtype="step", label=f"Background (N={background_mask_full.sum()})", color="red", density=True)
+    ax.hist(
+        trained_pt[signal_mask_full],
+        bins=50,
+        range=(0, 500),
+        histtype="step",
+        label=f"Signal (N={signal_mask_full.sum()})",
+        color="blue",
+        density=True,
+    )
+    ax.hist(
+        trained_pt[background_mask_full],
+        bins=50,
+        range=(0, 500),
+        histtype="step",
+        label=f"Background (N={background_mask_full.sum()})",
+        color="red",
+        density=True,
+    )
     ax.set_xlabel("Jet $p_T$ [GeV]")
     ax.set_ylabel("Density")
     ax.set_title("Signal vs Background Jet $p_T$")
     ax.legend()
 
     ax = axes[1]
-    ax.hist(trained_eta[signal_mask_full], bins=50, range=(-3, 3), histtype="step", label="Signal", color="blue", density=True)
-    ax.hist(trained_eta[background_mask_full], bins=50, range=(-3, 3), histtype="step", label="Background", color="red", density=True)
+    ax.hist(
+        trained_eta[signal_mask_full],
+        bins=50,
+        range=(-3, 3),
+        histtype="step",
+        label="Signal",
+        color="blue",
+        density=True,
+    )
+    ax.hist(
+        trained_eta[background_mask_full],
+        bins=50,
+        range=(-3, 3),
+        histtype="step",
+        label="Background",
+        color="red",
+        density=True,
+    )
     ax.set_xlabel(r"Jet $\eta$")
     ax.set_ylabel("Density")
     ax.set_title(r"Signal vs Background Jet $\eta$")
@@ -1774,7 +2128,14 @@ def main():
             (offline_pt, offline_eta, "Offline Jets"),
         ],
     ):
-        h = ax.hist2d(data_eta, data_pt, bins=[50, 50], range=[[-3, 3], [0, 300]], cmap="viridis", norm=plt.matplotlib.colors.LogNorm())
+        h = ax.hist2d(
+            data_eta,
+            data_pt,
+            bins=[50, 50],
+            range=[[-3, 3], [0, 300]],
+            cmap="viridis",
+            norm=plt.matplotlib.colors.LogNorm(),
+        )
         ax.set_xlabel(r"Jet $\eta$")
         ax.set_ylabel("Jet $p_T$ [GeV]")
         ax.set_title(f"{title}: $p_T$ vs $\\eta$")
@@ -1796,45 +2157,120 @@ def main():
     fig_reg, axes_reg = plt.subplots(2, 3, figsize=(18, 10))
 
     ax = axes_reg[0, 0]
-    ax.hist(jet_pt_reg[signal_mask_reg], bins=60, range=(0, 500), histtype="step", density=True, label="Signal")
-    ax.hist(jet_pt_reg[~signal_mask_reg], bins=60, range=(0, 500), histtype="step", density=True, label="Background")
-    ax.set_xlabel("Reco jet $p_T$ [GeV]"); ax.set_ylabel("Density"); ax.set_title("Reco jet $p_T$ distribution"); ax.legend()
+    ax.hist(
+        jet_pt_reg[signal_mask_reg],
+        bins=60,
+        range=(0, 500),
+        histtype="step",
+        density=True,
+        label="Signal",
+    )
+    ax.hist(
+        jet_pt_reg[~signal_mask_reg],
+        bins=60,
+        range=(0, 500),
+        histtype="step",
+        density=True,
+        label="Background",
+    )
+    ax.set_xlabel("Reco jet $p_T$ [GeV]")
+    ax.set_ylabel("Density")
+    ax.set_title("Reco jet $p_T$ distribution")
+    ax.legend()
 
     ax = axes_reg[0, 1]
-    ax.hist(gen_pt_reg[signal_mask_reg], bins=60, range=(0, 500), histtype="step", density=True, color="C0")
-    ax.set_xlabel("Gen $p_T$ [GeV]"); ax.set_ylabel("Density"); ax.set_title("Gen $p_T$ (signal jets only)")
+    ax.hist(
+        gen_pt_reg[signal_mask_reg],
+        bins=60,
+        range=(0, 500),
+        histtype="step",
+        density=True,
+        color="C0",
+    )
+    ax.set_xlabel("Gen $p_T$ [GeV]")
+    ax.set_ylabel("Density")
+    ax.set_title("Gen $p_T$ (signal jets only)")
 
     ax = axes_reg[0, 2]
     correction_reg = gen_pt_reg[signal_mask_reg] / (jet_pt_reg[signal_mask_reg] + 1e-9)
-    ax.hist(correction_reg, bins=60, range=(0, 3), histtype="step", density=True, color="C2")
+    ax.hist(
+        correction_reg, bins=60, range=(0, 3), histtype="step", density=True, color="C2"
+    )
     ax.axvline(1.0, color="gray", linestyle="--", alpha=0.7, label="No correction")
-    ax.set_xlabel("gen $p_T$ / reco $p_T$"); ax.set_ylabel("Density"); ax.set_title("Target correction factor (signal)"); ax.legend()
+    ax.set_xlabel("gen $p_T$ / reco $p_T$")
+    ax.set_ylabel("Density")
+    ax.set_title("Target correction factor (signal)")
+    ax.legend()
 
     if has_regression:
         reg_pt_reg = all_reg_pt
         ax = axes_reg[1, 0]
-        ax.hist(reg_pt_reg[signal_mask_reg], bins=60, histtype="step", density=True, label="Signal")
-        ax.hist(reg_pt_reg[~signal_mask_reg], bins=60, histtype="step", density=True, label="Background")
-        ax.set_xlabel("Regression output"); ax.set_ylabel("Density"); ax.set_title("Regression head output"); ax.legend()
+        ax.hist(
+            reg_pt_reg[signal_mask_reg],
+            bins=60,
+            histtype="step",
+            density=True,
+            label="Signal",
+        )
+        ax.hist(
+            reg_pt_reg[~signal_mask_reg],
+            bins=60,
+            histtype="step",
+            density=True,
+            label="Background",
+        )
+        ax.set_xlabel("Regression output")
+        ax.set_ylabel("Density")
+        ax.set_title("Regression head output")
+        ax.legend()
 
         ax = axes_reg[1, 1]
-        true_corr_reg = gen_pt_reg[signal_mask_reg] / (jet_pt_reg[signal_mask_reg] + 1e-9)
+        true_corr_reg = gen_pt_reg[signal_mask_reg] / (
+            jet_pt_reg[signal_mask_reg] + 1e-9
+        )
         pred_corr_reg = reg_pt_reg[signal_mask_reg]
         ax.scatter(true_corr_reg, pred_corr_reg, s=1, alpha=0.3)
         lim = max(true_corr_reg.max(), pred_corr_reg.max()) * 1.05
         ax.plot([0, lim], [0, lim], "r--", alpha=0.5, label="Ideal")
-        ax.set_xlabel("True correction"); ax.set_ylabel("Predicted correction"); ax.set_title("Predicted vs true correction"); ax.legend()
+        ax.set_xlabel("True correction")
+        ax.set_ylabel("Predicted correction")
+        ax.set_title("Predicted vs true correction")
+        ax.legend()
 
         ax = axes_reg[1, 2]
         corrected_pt_reg = jet_pt_reg[signal_mask_reg] * pred_corr_reg
-        ax.scatter(gen_pt_reg[signal_mask_reg], corrected_pt_reg, s=1, alpha=0.3, label="Corrected")
-        ax.scatter(gen_pt_reg[signal_mask_reg], jet_pt_reg[signal_mask_reg], s=1, alpha=0.1, color="gray", label="Uncorrected")
+        ax.scatter(
+            gen_pt_reg[signal_mask_reg],
+            corrected_pt_reg,
+            s=1,
+            alpha=0.3,
+            label="Corrected",
+        )
+        ax.scatter(
+            gen_pt_reg[signal_mask_reg],
+            jet_pt_reg[signal_mask_reg],
+            s=1,
+            alpha=0.1,
+            color="gray",
+            label="Uncorrected",
+        )
         ax.plot([0, 500], [0, 500], "r--", alpha=0.5)
-        ax.set_xlabel("Gen $p_T$ [GeV]"); ax.set_ylabel("Jet $p_T$ [GeV]"); ax.set_xlim(0, 500); ax.set_ylim(0, 500)
-        ax.set_title("Corrected vs uncorrected $p_T$"); ax.legend()
+        ax.set_xlabel("Gen $p_T$ [GeV]")
+        ax.set_ylabel("Jet $p_T$ [GeV]")
+        ax.set_xlim(0, 500)
+        ax.set_ylim(0, 500)
+        ax.set_title("Corrected vs uncorrected $p_T$")
+        ax.legend()
     else:
         for i in range(3):
-            axes_reg[1, i].text(0.5, 0.5, "No regression head", ha="center", va="center", transform=axes_reg[1, i].transAxes)
+            axes_reg[1, i].text(
+                0.5,
+                0.5,
+                "No regression head",
+                ha="center",
+                va="center",
+                transform=axes_reg[1, i].transAxes,
+            )
             axes_reg[1, i].set_axis_off()
 
     plt.tight_layout()
@@ -1845,26 +2281,51 @@ def main():
     # ── Cell 13: Uncorrected / corrected pT scatter plots ─────────────
     lim = 500
     fig, ax = plt.subplots()
-    ax.scatter(gen_pt_reg[signal_mask_reg], jet_pt_reg[signal_mask_reg], s=1, alpha=0.1, color="black", label="Uncorrected")
+    ax.scatter(
+        gen_pt_reg[signal_mask_reg],
+        jet_pt_reg[signal_mask_reg],
+        s=1,
+        alpha=0.1,
+        color="black",
+        label="Uncorrected",
+    )
     ax.plot([0, lim], [0, lim], "r--", alpha=0.5)
-    ax.set_xlabel("Gen $p_T$ [GeV]"); ax.set_ylabel("Jet $p_T$ [GeV]"); ax.set_xlim(0, lim); ax.set_ylim(0, lim)
-    ax.set_title("Uncorrected $p_T$"); ax.legend()
+    ax.set_xlabel("Gen $p_T$ [GeV]")
+    ax.set_ylabel("Jet $p_T$ [GeV]")
+    ax.set_xlim(0, lim)
+    ax.set_ylim(0, lim)
+    ax.set_title("Uncorrected $p_T$")
+    ax.legend()
     save_fig(fig, "uncorrected_pt_scatter")
     plt.close(fig)
 
     if has_regression:
         corrected_pt_reg = jet_pt_reg[signal_mask_reg] * pred_corr_reg
         fig, ax = plt.subplots()
-        ax.scatter(gen_pt_reg[signal_mask_reg], corrected_pt_reg, s=1, alpha=0.3, label="Corrected")
+        ax.scatter(
+            gen_pt_reg[signal_mask_reg],
+            corrected_pt_reg,
+            s=1,
+            alpha=0.3,
+            label="Corrected",
+        )
         ax.plot([0, lim], [0, lim], "r--", alpha=0.5)
-        ax.set_xlabel("Gen $p_T$ [GeV]"); ax.set_ylabel("Jet $p_T$ [GeV]"); ax.set_xlim(0, lim); ax.set_ylim(0, lim)
-        ax.set_title("Corrected $p_T$"); ax.legend()
+        ax.set_xlabel("Gen $p_T$ [GeV]")
+        ax.set_ylabel("Jet $p_T$ [GeV]")
+        ax.set_xlim(0, lim)
+        ax.set_ylim(0, lim)
+        ax.set_title("Corrected $p_T$")
+        ax.legend()
         save_fig(fig, "corrected_pt_scatter")
         plt.close(fig)
 
     # ── Cell 14: Jet pT resolution analysis ──────────────────────────
     from scipy.optimize import curve_fit
-    from evaluation.resolution import gaussian, fit_response_in_bin, get_resolution_vs_var
+    from evaluation.resolution import (
+        gaussian,
+        fit_response_in_bin,
+        get_resolution_vs_var,
+    )
 
     # Select signal jets only
     signal_mask_res = all_labels.squeeze() == 1
@@ -1891,19 +2352,32 @@ def main():
         q84 = all_quantiles[signal_mask_res, 1]
         predicted_resolution_abs = 0.5 * (q84 - q16) * jet_pt_sig * pred_scale
         predicted_resolution_rel = 0.5 * (q84 - q16)
-        print(f"Predicted resolution (absolute) range: {predicted_resolution_abs.min():.2f} – {predicted_resolution_abs.max():.2f} GeV")
-        print(f"Predicted resolution (relative)  range: {predicted_resolution_rel.min():.4f} – {predicted_resolution_rel.max():.4f}")
+        print(
+            f"Predicted resolution (absolute) range: {predicted_resolution_abs.min():.2f} – {predicted_resolution_abs.max():.2f} GeV"
+        )
+        print(
+            f"Predicted resolution (relative)  range: {predicted_resolution_rel.min():.4f} – {predicted_resolution_rel.max():.4f}"
+        )
 
     # Binning
     pt_bins_res = np.linspace(25, 500, 30)
     eta_bins_res = np.linspace(-2.4, 2.4, 20)
 
-    bc_pt, mu_raw_pt, sig_raw_pt, mu_raw_pt_err, sig_raw_pt_err = get_resolution_vs_var(gen_pt_sig, raw_response, pt_bins_res)
-    bc_pt, mu_corr_pt, sig_corr_pt, mu_corr_pt_err, sig_corr_pt_err = get_resolution_vs_var(gen_pt_sig, corr_response, pt_bins_res)
-    bc_eta, mu_raw_eta, sig_raw_eta, mu_raw_eta_err, sig_raw_eta_err = get_resolution_vs_var(gen_eta_sig, raw_response, eta_bins_res)
-    bc_eta, mu_corr_eta, sig_corr_eta, mu_corr_eta_err, sig_corr_eta_err = get_resolution_vs_var(gen_eta_sig, corr_response, eta_bins_res)
+    bc_pt, mu_raw_pt, sig_raw_pt, mu_raw_pt_err, sig_raw_pt_err = get_resolution_vs_var(
+        gen_pt_sig, raw_response, pt_bins_res
+    )
+    bc_pt, mu_corr_pt, sig_corr_pt, mu_corr_pt_err, sig_corr_pt_err = (
+        get_resolution_vs_var(gen_pt_sig, corr_response, pt_bins_res)
+    )
+    bc_eta, mu_raw_eta, sig_raw_eta, mu_raw_eta_err, sig_raw_eta_err = (
+        get_resolution_vs_var(gen_eta_sig, raw_response, eta_bins_res)
+    )
+    bc_eta, mu_corr_eta, sig_corr_eta, mu_corr_eta_err, sig_corr_eta_err = (
+        get_resolution_vs_var(gen_eta_sig, corr_response, eta_bins_res)
+    )
 
     if has_quantile:
+
         def avg_in_bins(gen_var, values, var_bins):
             bc = 0.5 * (var_bins[1:] + var_bins[:-1])
             means, errs = [], []
@@ -1911,13 +2385,19 @@ def main():
                 m = (gen_var > var_bins[i]) & (gen_var <= var_bins[i + 1])
                 v = values[m]
                 if len(v) > 5:
-                    means.append(np.mean(v)); errs.append(np.std(v) / np.sqrt(len(v)))
+                    means.append(np.mean(v))
+                    errs.append(np.std(v) / np.sqrt(len(v)))
                 else:
-                    means.append(np.nan); errs.append(0.0)
+                    means.append(np.nan)
+                    errs.append(0.0)
             return bc, np.array(means), np.array(errs)
 
-        _, pred_res_vs_pt, pred_res_vs_pt_err = avg_in_bins(gen_pt_sig, predicted_resolution_rel, pt_bins_res)
-        _, pred_res_vs_eta, pred_res_vs_eta_err = avg_in_bins(gen_eta_sig, predicted_resolution_rel, eta_bins_res)
+        _, pred_res_vs_pt, pred_res_vs_pt_err = avg_in_bins(
+            gen_pt_sig, predicted_resolution_rel, pt_bins_res
+        )
+        _, pred_res_vs_eta, pred_res_vs_eta_err = avg_in_bins(
+            gen_eta_sig, predicted_resolution_rel, eta_bins_res
+        )
 
     print("Resolution computation complete.")
 
@@ -2009,13 +2489,25 @@ def main():
     # Top panel: Scale (mean of response) vs gen pT
     ax = axes[0]
     ax.errorbar(
-        bc_pt, mu_raw_pt, yerr=mu_raw_pt_err,
-        marker="o", linestyle="-", capsize=4, label="Uncorrected", color="C0",
+        bc_pt,
+        mu_raw_pt,
+        yerr=mu_raw_pt_err,
+        marker="o",
+        linestyle="-",
+        capsize=4,
+        label="Uncorrected",
+        color="C0",
     )
     if has_regression:
         ax.errorbar(
-            bc_pt, mu_corr_pt, yerr=mu_corr_pt_err,
-            marker="s", linestyle="-", capsize=4, label="Corrected (regression)", color="C1",
+            bc_pt,
+            mu_corr_pt,
+            yerr=mu_corr_pt_err,
+            marker="s",
+            linestyle="-",
+            capsize=4,
+            label="Corrected (regression)",
+            color="C1",
         )
     ax.axhline(1.0, color="black", linestyle="-", linewidth=0.8)
     ax.set_ylabel("Jet $p_T$ Scale (Mean of Response)")
@@ -2026,18 +2518,36 @@ def main():
     # Bottom panel: Resolution (sigma) vs gen pT
     ax = axes[1]
     ax.errorbar(
-        bc_pt, sig_raw_pt, yerr=sig_raw_pt_err,
-        marker="o", linestyle="-", capsize=4, label="Calculated (uncorrected)", color="C0",
+        bc_pt,
+        sig_raw_pt,
+        yerr=sig_raw_pt_err,
+        marker="o",
+        linestyle="-",
+        capsize=4,
+        label="Calculated (uncorrected)",
+        color="C0",
     )
     if has_regression:
         ax.errorbar(
-            bc_pt, sig_corr_pt, yerr=sig_corr_pt_err,
-            marker="s", linestyle="-", capsize=4, label="Calculated (corrected)", color="C1",
+            bc_pt,
+            sig_corr_pt,
+            yerr=sig_corr_pt_err,
+            marker="s",
+            linestyle="-",
+            capsize=4,
+            label="Calculated (corrected)",
+            color="C1",
         )
     if has_quantile:
         ax.errorbar(
-            bc_pt, pred_res_vs_pt, yerr=pred_res_vs_pt_err,
-            marker="^", linestyle="--", capsize=4, label="Predicted (quantile head)", color="C2",
+            bc_pt,
+            pred_res_vs_pt,
+            yerr=pred_res_vs_pt_err,
+            marker="^",
+            linestyle="--",
+            capsize=4,
+            label="Predicted (quantile head)",
+            color="C2",
         )
     ax.set_xlabel("Generated Jet $p_T$ [GeV]")
     ax.set_ylabel("Resolution ($\\sigma$ of Response)")
@@ -2054,13 +2564,25 @@ def main():
     # Top: Scale vs eta
     ax = axes[0]
     ax.errorbar(
-        bc_eta, mu_raw_eta, yerr=mu_raw_eta_err,
-        marker="o", linestyle="-", capsize=4, label="Uncorrected", color="C0",
+        bc_eta,
+        mu_raw_eta,
+        yerr=mu_raw_eta_err,
+        marker="o",
+        linestyle="-",
+        capsize=4,
+        label="Uncorrected",
+        color="C0",
     )
     if has_regression:
         ax.errorbar(
-            bc_eta, mu_corr_eta, yerr=mu_corr_eta_err,
-            marker="s", linestyle="-", capsize=4, label="Corrected (regression)", color="C1",
+            bc_eta,
+            mu_corr_eta,
+            yerr=mu_corr_eta_err,
+            marker="s",
+            linestyle="-",
+            capsize=4,
+            label="Corrected (regression)",
+            color="C1",
         )
     ax.axhline(1.0, color="black", linestyle="-", linewidth=0.8)
     ax.set_ylabel("Jet $p_T$ Scale (Mean of Response)")
@@ -2071,18 +2593,36 @@ def main():
     # Bottom: Resolution vs eta
     ax = axes[1]
     ax.errorbar(
-        bc_eta, sig_raw_eta, yerr=sig_raw_eta_err,
-        marker="o", linestyle="-", capsize=4, label="Calculated (uncorrected)", color="C0",
+        bc_eta,
+        sig_raw_eta,
+        yerr=sig_raw_eta_err,
+        marker="o",
+        linestyle="-",
+        capsize=4,
+        label="Calculated (uncorrected)",
+        color="C0",
     )
     if has_regression:
         ax.errorbar(
-            bc_eta, sig_corr_eta, yerr=sig_corr_eta_err,
-            marker="s", linestyle="-", capsize=4, label="Calculated (corrected)", color="C1",
+            bc_eta,
+            sig_corr_eta,
+            yerr=sig_corr_eta_err,
+            marker="s",
+            linestyle="-",
+            capsize=4,
+            label="Calculated (corrected)",
+            color="C1",
         )
     if has_quantile:
         ax.errorbar(
-            bc_eta, pred_res_vs_eta, yerr=pred_res_vs_eta_err,
-            marker="^", linestyle="--", capsize=4, label="Predicted (quantile head)", color="C2",
+            bc_eta,
+            pred_res_vs_eta,
+            yerr=pred_res_vs_eta_err,
+            marker="^",
+            linestyle="--",
+            capsize=4,
+            label="Predicted (quantile head)",
+            color="C2",
         )
     ax.set_xlabel("Jet $\\eta$")
     ax.set_ylabel("Resolution ($\\sigma$ of Response)")
@@ -2099,9 +2639,11 @@ def main():
     # 4a. Uncorrected pT response vs gen pT
     ax = axes[0]
     h0 = ax.hist2d(
-        gen_pt_sig, raw_response,
+        gen_pt_sig,
+        raw_response,
         bins=[np.linspace(25, 500, 51), np.linspace(0, 2, 51)],
-        cmap="viridis", cmin=1,
+        cmap="viridis",
+        cmin=1,
     )
     ax.axhline(1.0, color="red", linestyle="--", alpha=0.7)
     ax.set_xlabel("Generated $p_T$ [GeV]")
@@ -2112,9 +2654,11 @@ def main():
     # 4b. Corrected pT response vs gen pT
     ax = axes[1]
     h1 = ax.hist2d(
-        gen_pt_sig, corr_response,
+        gen_pt_sig,
+        corr_response,
         bins=[np.linspace(25, 500, 51), np.linspace(0, 2, 51)],
-        cmap="viridis", cmin=1,
+        cmap="viridis",
+        cmin=1,
     )
     ax.axhline(1.0, color="red", linestyle="--", alpha=0.7)
     ax.set_xlabel("Generated $p_T$ [GeV]")
@@ -2126,8 +2670,12 @@ def main():
     ax = axes[2]
     if has_quantile:
         sc = ax.scatter(
-            gen_pt_sig, predicted_resolution_rel,
-            c=jet_pt_sig, s=1, alpha=0.3, cmap="plasma",
+            gen_pt_sig,
+            predicted_resolution_rel,
+            c=jet_pt_sig,
+            s=1,
+            alpha=0.3,
+            cmap="plasma",
         )
         plt.colorbar(sc, ax=ax, label="Reco Jet $p_T$ [GeV]")
         ax.set_xlabel("Generated $p_T$ [GeV]")
@@ -2135,8 +2683,15 @@ def main():
         ax.set_title("Quantile-Predicted Resolution vs. Gen $p_T$")
         ax.set_ylim(0, 0.5)
     else:
-        ax.text(0.5, 0.5, "No quantile head", ha="center", va="center",
-                transform=ax.transAxes, fontsize=14)
+        ax.text(
+            0.5,
+            0.5,
+            "No quantile head",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=14,
+        )
         ax.set_axis_off()
 
     plt.tight_layout()
@@ -2159,10 +2714,14 @@ def main():
         vals_raw = raw_response[mask]
         counts_raw, _ = np.histogram(vals_raw, bins=response_bins)
         (mu_r, sig_r, A_r), _ = fit_response_in_bin(vals_raw, response_bins)
-        ax.stairs(counts_raw, response_bins, color="C0", linewidth=1.5, label="Uncorrected")
+        ax.stairs(
+            counts_raw, response_bins, color="C0", linewidth=1.5, label="Uncorrected"
+        )
         if not np.isnan(mu_r):
             ax.plot(
-                x_fit, gaussian(x_fit, mu_r, sig_r, A_r), "C0--",
+                x_fit,
+                gaussian(x_fit, mu_r, sig_r, A_r),
+                "C0--",
                 label=f"$\\mu$={mu_r:.3f}, $\\sigma$={abs(sig_r):.3f}",
             )
         ax.set_title(f"gen $p_T$ [{pt_lo},{pt_hi}) GeV\n(Uncorrected)")
@@ -2176,16 +2735,26 @@ def main():
             vals_corr = corr_response[mask]
             counts_corr, _ = np.histogram(vals_corr, bins=response_bins)
             (mu_c, sig_c, A_c), _ = fit_response_in_bin(vals_corr, response_bins)
-            ax.stairs(counts_corr, response_bins, color="C1", linewidth=1.5, label="Corrected")
+            ax.stairs(
+                counts_corr, response_bins, color="C1", linewidth=1.5, label="Corrected"
+            )
             if not np.isnan(mu_c):
                 ax.plot(
-                    x_fit, gaussian(x_fit, mu_c, sig_c, A_c), "C1--",
+                    x_fit,
+                    gaussian(x_fit, mu_c, sig_c, A_c),
+                    "C1--",
                     label=f"$\\mu$={mu_c:.3f}, $\\sigma$={abs(sig_c):.3f}",
                 )
             ax.set_title(f"gen $p_T$ [{pt_lo},{pt_hi}) GeV\n(Corrected)")
         else:
-            ax.text(0.5, 0.5, "No regression head", ha="center", va="center",
-                    transform=ax.transAxes)
+            ax.text(
+                0.5,
+                0.5,
+                "No regression head",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
         ax.set_xlabel("$p_T$ Response")
         ax.set_ylabel("Counts")
         ax.legend(fontsize="x-small")
@@ -2203,20 +2772,36 @@ def main():
         abs_raw_res = sig_raw_pt * bc_pt
         abs_corr_res = sig_corr_pt * bc_pt
         ax.errorbar(
-            bc_pt, abs_raw_res,
-            marker="o", linestyle="-", capsize=4, label="Calculated (uncorrected)", color="C0",
+            bc_pt,
+            abs_raw_res,
+            marker="o",
+            linestyle="-",
+            capsize=4,
+            label="Calculated (uncorrected)",
+            color="C0",
         )
         if has_regression:
             ax.errorbar(
-                bc_pt, abs_corr_res,
-                marker="s", linestyle="-", capsize=4, label="Calculated (corrected)", color="C1",
+                bc_pt,
+                abs_corr_res,
+                marker="s",
+                linestyle="-",
+                capsize=4,
+                label="Calculated (corrected)",
+                color="C1",
             )
         _, pred_abs_vs_pt, pred_abs_vs_pt_err = avg_in_bins(
             gen_pt_sig, predicted_resolution_abs, pt_bins_res
         )
         ax.errorbar(
-            bc_pt, pred_abs_vs_pt, yerr=pred_abs_vs_pt_err,
-            marker="^", linestyle="--", capsize=4, label="Predicted (quantile head)", color="C2",
+            bc_pt,
+            pred_abs_vs_pt,
+            yerr=pred_abs_vs_pt_err,
+            marker="^",
+            linestyle="--",
+            capsize=4,
+            label="Predicted (quantile head)",
+            color="C2",
         )
         ax.set_xlabel("Generated Jet $p_T$ [GeV]")
         ax.set_ylabel("Absolute $p_T$ Resolution [GeV]")
@@ -2227,11 +2812,18 @@ def main():
         # 6b. Fractional improvement
         ax = axes[1]
         if has_regression:
-            valid = (~np.isnan(sig_raw_pt)) & (~np.isnan(sig_corr_pt)) & (sig_raw_pt > 0)
-            improvement = (sig_raw_pt[valid] - sig_corr_pt[valid]) / sig_raw_pt[valid] * 100
+            valid = (
+                (~np.isnan(sig_raw_pt)) & (~np.isnan(sig_corr_pt)) & (sig_raw_pt > 0)
+            )
+            improvement = (
+                (sig_raw_pt[valid] - sig_corr_pt[valid]) / sig_raw_pt[valid] * 100
+            )
             ax.bar(
-                bc_pt[valid], improvement,
-                width=np.diff(pt_bins_res).mean() * 0.7, color="C3", alpha=0.7,
+                bc_pt[valid],
+                improvement,
+                width=np.diff(pt_bins_res).mean() * 0.7,
+                color="C3",
+                alpha=0.7,
             )
             ax.axhline(0, color="black", linewidth=0.8)
             ax.set_xlabel("Generated Jet $p_T$ [GeV]")
@@ -2239,13 +2831,23 @@ def main():
             ax.set_title("Resolution Improvement from Regression Correction")
             mean_improvement = np.nanmean(improvement)
             ax.text(
-                0.05, 0.95, f"Mean improvement: {mean_improvement:.1f}%",
-                transform=ax.transAxes, va="top", fontsize=12,
+                0.05,
+                0.95,
+                f"Mean improvement: {mean_improvement:.1f}%",
+                transform=ax.transAxes,
+                va="top",
+                fontsize=12,
                 bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
             )
         else:
-            ax.text(0.5, 0.5, "No regression head", ha="center", va="center",
-                    transform=ax.transAxes)
+            ax.text(
+                0.5,
+                0.5,
+                "No regression head",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
 
         plt.tight_layout()
         save_fig(fig, "absolute_resolution_and_improvement")
@@ -2259,14 +2861,26 @@ def main():
     import fastjet
     from itertools import combinations
     from data_pipeline.make_particle_dataset import cluster_candidates
-    from data_pipeline.root_loading import load_and_prepare_data, select_gen_b_quarks_from_higgs, apply_custom_cuts, one_hot_encode_l1_puppi
+    from data_pipeline.root_loading import (
+        load_and_prepare_data,
+        select_gen_b_quarks_from_higgs,
+        apply_custom_cuts,
+        one_hot_encode_l1_puppi,
+    )
     from evaluation.jet_matching import get_purity_mask_cross_matched
-    from evaluation.dihiggs import pair_from_4jets, find_gen_b_pairs_with_indices, R_hh_func, compute_significance_at_luminosity
+    from evaluation.dihiggs import (
+        pair_from_4jets,
+        find_gen_b_pairs_with_indices,
+        R_hh_func,
+        compute_significance_at_luminosity,
+    )
 
     # Configuration
     apply_pt_correction = True
 
-    dataset_used = config_part.get("training", {}).get("data", {}).get("use_dataset", "pf")
+    dataset_used = (
+        config_part.get("training", {}).get("data", {}).get("use_dataset", "pf")
+    )
     if dataset_used == "pf":
         collection_key = "l1extpf"
     elif dataset_used == "puppi":
@@ -2280,7 +2894,11 @@ def main():
     print(f"ROOT data: {root_data_pattern}")
     print(f"Collection: {collection_name}")
 
-    n_constituents = n_constituents_model if n_constituents_model is not None else all_constituents.shape[1]
+    n_constituents = (
+        n_constituents_model
+        if n_constituents_model is not None
+        else all_constituents.shape[1]
+    )
 
     def cluster_and_score(
         events,
@@ -2342,7 +2960,9 @@ def main():
         n_actual_constituents = ak.num(matched_cands, axis=2)
         n_actual_flat = ak.to_numpy(ak.flatten(n_actual_constituents, axis=1))
 
-        x_ini = np.stack([ak.to_numpy(ak.flatten(f, axis=1)) for f in feature_list], axis=-1)
+        x_ini = np.stack(
+            [ak.to_numpy(ak.flatten(f, axis=1)) for f in feature_list], axis=-1
+        )
         flat_ids = x_ini[..., -1]
         one_hot_ids = one_hot_encode_l1_puppi(flat_ids, n_classes=5)
         X_feat = np.concatenate([x_ini[..., :-1], one_hot_ids], axis=-1)
@@ -2492,11 +3112,15 @@ def main():
 
     gen_b_for_match = dihiggs_gen_b[has_4_clustered]
     if n_sig_4jet > 0:
-        dr_reco = sig_jets_all[:, :, None].vector.deltaR(gen_b_for_match[:, None, :].vector)
+        dr_reco = sig_jets_all[:, :, None].vector.deltaR(
+            gen_b_for_match[:, None, :].vector
+        )
         idx_gen_for_reco = ak.argmin(dr_reco, axis=2)
         min_dr_reco = ak.fill_none(ak.min(dr_reco, axis=2), np.inf)
 
-        dr_gen = gen_b_for_match[:, :, None].vector.deltaR(sig_jets_all[:, None, :].vector)
+        dr_gen = gen_b_for_match[:, :, None].vector.deltaR(
+            sig_jets_all[:, None, :].vector
+        )
         idx_reco_for_gen = ak.argmin(dr_gen, axis=2)
 
         back_check = idx_reco_for_gen[idx_gen_for_reco]
@@ -2544,11 +3168,19 @@ def main():
         p3_c1, p3_c2 = gmpr[:, [0, 3]], gmpr[:, [1, 2]]
 
         c0, c1_flag = (best == 0), (best == 1)
-        algo_pair_A = ak.where(c0[:, None], p1_c1, ak.where(c1_flag[:, None], p2_c1, p3_c1))
-        algo_pair_B = ak.where(c0[:, None], p1_c2, ak.where(c1_flag[:, None], p2_c2, p3_c2))
+        algo_pair_A = ak.where(
+            c0[:, None], p1_c1, ak.where(c1_flag[:, None], p2_c1, p3_c1)
+        )
+        algo_pair_B = ak.where(
+            c0[:, None], p1_c2, ak.where(c1_flag[:, None], p2_c2, p3_c2)
+        )
 
-        raw_h1_v = ak.where(c0, h_vecs[0][0], ak.where(c1_flag, h_vecs[1][0], h_vecs[2][0]))
-        raw_h2_v = ak.where(c0, h_vecs[0][1], ak.where(c1_flag, h_vecs[1][1], h_vecs[2][1]))
+        raw_h1_v = ak.where(
+            c0, h_vecs[0][0], ak.where(c1_flag, h_vecs[1][0], h_vecs[2][0])
+        )
+        raw_h2_v = ak.where(
+            c0, h_vecs[0][1], ak.where(c1_flag, h_vecs[1][1], h_vecs[2][1])
+        )
         is_lead_v = raw_h1_v.pt >= raw_h2_v.pt
         algo_pair_leading = ak.where(is_lead_v[:, None], algo_pair_A, algo_pair_B)
         algo_pair_subleading = ak.where(is_lead_v[:, None], algo_pair_B, algo_pair_A)
@@ -2581,7 +3213,9 @@ def main():
     print("Processing QCD BACKGROUND...")
     print("=" * 60)
     qcd_config = config["QCD_background"]
-    sigma_to_ngen = {bin_cfg["weight"]: bin_cfg["n_gen"] for bin_cfg in qcd_config.values()}
+    sigma_to_ngen = {
+        bin_cfg["weight"]: bin_cfg["n_gen"] for bin_cfg in qcd_config.values()
+    }
     _qcd_min_btag_list = []
     all_qcd_lead, all_qcd_sub, all_qcd_hh = [], [], []
     all_qcd_weights_list = []
@@ -2679,7 +3313,9 @@ def main():
     # Notebook parity Phase 2: significance sweep and WP selection after matching.
     _sig_lead_m = ak.to_numpy(sig_lead_all.mass) if n_sig_4jet > 0 else np.array([])
     _sig_sub_m = ak.to_numpy(sig_sub_all.mass) if n_sig_4jet > 0 else np.array([])
-    _qcd_lead_m = ak.to_numpy(qcd_lead_all.mass) if n_qcd_4jet_total > 0 else np.array([])
+    _qcd_lead_m = (
+        ak.to_numpy(qcd_lead_all.mass) if n_qcd_4jet_total > 0 else np.array([])
+    )
     _qcd_sub_m = ak.to_numpy(qcd_sub_all.mass) if n_qcd_4jet_total > 0 else np.array([])
 
     R_HH_CUT = 55.0
@@ -2793,9 +3429,7 @@ def main():
 
     WP_SELECTION = "loose"  # choose from: tight | medium | loose | optimal
     PART_BTAG_THRESHOLD = wp_options[WP_SELECTION]
-    print(
-        f"\nSelected WP: {WP_SELECTION}  (threshold = {PART_BTAG_THRESHOLD:.4f})"
-    )
+    print(f"\nSelected WP: {WP_SELECTION}  (threshold = {PART_BTAG_THRESHOLD:.4f})")
 
     _sig_mask = (_sig_min_btag >= PART_BTAG_THRESHOLD) & _sig_is_pure
     _qcd_mask = _qcd_min_btag >= PART_BTAG_THRESHOLD
@@ -2818,18 +3452,31 @@ def main():
     qcd_lead = qcd_lead_all[_qcd_mask] if n_qcd_4jet_total > 0 else ak.Array([])
     qcd_sub = qcd_sub_all[_qcd_mask] if n_qcd_4jet_total > 0 else ak.Array([])
     qcd_hh = qcd_hh_all[_qcd_mask] if n_qcd_4jet_total > 0 else ak.Array([])
-    qcd_weights = _qcd_weights_raw[_qcd_mask] if n_qcd_4jet_total > 0 else np.array([], dtype=np.float64)
+    qcd_weights = (
+        _qcd_weights_raw[_qcd_mask]
+        if n_qcd_4jet_total > 0
+        else np.array([], dtype=np.float64)
+    )
 
     part_dihiggs_result = {
         "label": f"Trained ParT ({WP_SELECTION} = {PART_BTAG_THRESHOLD:.4f})",
-        "n_total": n_total, "n_signal": n_signal, "n_qcd": n_qcd,
-        "sig_lead": sig_lead, "sig_sub": sig_sub, "sig_hh": sig_hh,
-        "qcd_lead": qcd_lead, "qcd_sub": qcd_sub, "qcd_hh": qcd_hh,
+        "n_total": n_total,
+        "n_signal": n_signal,
+        "n_qcd": n_qcd,
+        "sig_lead": sig_lead,
+        "sig_sub": sig_sub,
+        "sig_hh": sig_hh,
+        "qcd_lead": qcd_lead,
+        "qcd_sub": qcd_sub,
+        "qcd_hh": qcd_hh,
         "qcd_weights": qcd_weights,
         "sigma_to_ngen": sigma_to_ngen,
-        "collection_key": collection_key, "wp": WP_SELECTION,
-        "threshold": PART_BTAG_THRESHOLD, "has_regression": has_reg,
-        "pair_eff": float(pair_eff), "eff_swapped": float(eff_swapped),
+        "collection_key": collection_key,
+        "wp": WP_SELECTION,
+        "threshold": PART_BTAG_THRESHOLD,
+        "has_regression": has_reg,
+        "pair_eff": float(pair_eff),
+        "eff_swapped": float(eff_swapped),
     }
 
     print(f"\n{'='*60}")
@@ -2840,12 +3487,16 @@ def main():
         f"  Selected: {n_total} events with >=4 jets above threshold = "
         f"{n_total/max(n_sig_4jet,1)*100:.2f}% of {n_sig_4jet} pre-threshold 4-jet events"
     )
-    print(f"  Signal (all 4 pure, above threshold): {n_signal} events ({n_signal/max(n_total,1)*100:.1f}%)")
+    print(
+        f"  Signal (all 4 pure, above threshold): {n_signal} events ({n_signal/max(n_total,1)*100:.1f}%)"
+    )
     print(
         f"  QCD background: {n_qcd} events (from {n_qcd_events_processed} QCD events processed)"
     )
     print(f"  pT regression: {'applied' if has_reg else 'not available'}")
-    print(f"  Pairing eff @WP: {pair_eff:.2%} | Swapped: {eff_swapped:.2%} | Total: {pair_eff + eff_swapped:.2%}")
+    print(
+        f"  Pairing eff @WP: {pair_eff:.2%} | Swapped: {eff_swapped:.2%} | Total: {pair_eff + eff_swapped:.2%}"
+    )
     print(f"{'='*60}")
 
     # ── Cell 23: Top-N jet purity efficiency ─────────────────────────
@@ -2855,8 +3506,12 @@ def main():
         pt_ordered = reco_jets[ak.argsort(reco_jets.vector.pt, ascending=False)]
         tag_ordered = reco_jets[ak.argsort(reco_jets[tagger_name], ascending=False)]
 
-        pt_ordered_purity_idxs = get_pure_jet_idxs_cross_matched(gen_b_quarks, pt_ordered)
-        tag_ordered_purity_idxs = get_pure_jet_idxs_cross_matched(gen_b_quarks, tag_ordered)
+        pt_ordered_purity_idxs = get_pure_jet_idxs_cross_matched(
+            gen_b_quarks, pt_ordered
+        )
+        tag_ordered_purity_idxs = get_pure_jet_idxs_cross_matched(
+            gen_b_quarks, tag_ordered
+        )
 
         num_highest_pt_pure = ak.any(pt_ordered_purity_idxs == 0, axis=1)
         eff_highest_pt_pure = ak.sum(num_highest_pt_pure) / len(gen_b_quarks)
@@ -2871,40 +3526,64 @@ def main():
         more_than_n_eff_pt = []
         more_than_n_eff_tag = []
         for k in range_k:
-            num_k_highest_pt_pure = (ak.num(pt_ordered_purity_idxs) == n) & (ak.all(pt_ordered_purity_idxs < k, axis=1))
+            num_k_highest_pt_pure = (ak.num(pt_ordered_purity_idxs) == n) & (
+                ak.all(pt_ordered_purity_idxs < k, axis=1)
+            )
             eff_k_highest_pt_pure = ak.sum(num_k_highest_pt_pure) / len(gen_b_quarks)
             more_than_n_eff_pt.append(eff_k_highest_pt_pure)
 
-            num_k_highest_tag_pure = (ak.num(tag_ordered_purity_idxs) == n) & (ak.all(tag_ordered_purity_idxs < k, axis=1))
+            num_k_highest_tag_pure = (ak.num(tag_ordered_purity_idxs) == n) & (
+                ak.all(tag_ordered_purity_idxs < k, axis=1)
+            )
             eff_k_highest_tag_pure = ak.sum(num_k_highest_tag_pure) / len(gen_b_quarks)
             more_than_n_eff_tag.append(eff_k_highest_tag_pure)
 
-        return eff_highest_pt_pure, eff_highest_tag_pure, more_than_n_eff_pt, more_than_n_eff_tag
+        return (
+            eff_highest_pt_pure,
+            eff_highest_tag_pure,
+            more_than_n_eff_pt,
+            more_than_n_eff_tag,
+        )
 
     n_eff = 4
     k_eff = 25
     range_k = range(k_eff + 1)
 
-    (eff_highest_pt_pure_part, eff_highest_btag_pure_part,
-     more_than_n_eff_pt_part, more_than_n_eff_btag_part,
+    (
+        eff_highest_pt_pure_part,
+        eff_highest_btag_pure_part,
+        more_than_n_eff_pt_part,
+        more_than_n_eff_btag_part,
     ) = get_eff_first_jet_pure(dihiggs_gen_b, scored_jets, "btag_score", n_eff, k_eff)
 
     print(f"\nPlotting Top-N Jet Efficiencies for N = {n_eff}...")
     fig_eff_pt, ax_pt = plt.subplots(figsize=(10, 6))
-    ax_pt.step(range_k, more_than_n_eff_pt_part, where="mid", label="ParT pT", color="purple")
+    ax_pt.step(
+        range_k, more_than_n_eff_pt_part, where="mid", label="ParT pT", color="purple"
+    )
     ax_pt.set_xlabel("k (Number of Top Jets Considered)")
     ax_pt.set_ylabel(f"Probability of Finding at least {n_eff} b-jets")
-    ax_pt.set_title(f"Probability of Finding at least {n_eff} b-jets vs. Top k Jets (pT ordered)")
+    ax_pt.set_title(
+        f"Probability of Finding at least {n_eff} b-jets vs. Top k Jets (pT ordered)"
+    )
     ax_pt.grid(True, linestyle="--", alpha=0.6)
     ax_pt.legend()
     save_fig(fig_eff_pt, "top_n_eff_pt_ordering")
     plt.close(fig_eff_pt)
 
     fig_eff_btag, ax_btag = plt.subplots(figsize=(10, 6))
-    ax_btag.step(range_k, more_than_n_eff_btag_part, where="mid", label="ParT BTag", color="purple")
+    ax_btag.step(
+        range_k,
+        more_than_n_eff_btag_part,
+        where="mid",
+        label="ParT BTag",
+        color="purple",
+    )
     ax_btag.set_xlabel("k (Number of Top Jets Considered)")
     ax_btag.set_ylabel(f"Probability of Finding at least {n_eff} b-jets")
-    ax_btag.set_title(f"Probability of Finding at least {n_eff} b-jets vs. Top k Jets (BTag ordered)")
+    ax_btag.set_title(
+        f"Probability of Finding at least {n_eff} b-jets vs. Top k Jets (BTag ordered)"
+    )
     ax_btag.grid(True, linestyle="--", alpha=0.6)
     ax_btag.legend()
     save_fig(fig_eff_btag, "top_n_eff_btag_ordering")
@@ -2929,37 +3608,119 @@ def main():
 
     ax = axes[0]
     if res["n_signal"] > 0:
-        ax.hist(ak.to_numpy(res["sig_lead"].mass), bins=bins_h, histtype="stepfilled", alpha=0.3, color=color_dh, label=f'Signal ({res["n_signal"]})', density=True)
-        ax.hist(ak.to_numpy(res["sig_lead"].mass), bins=bins_h, histtype="step", linewidth=2, color=color_dh, density=True)
+        ax.hist(
+            ak.to_numpy(res["sig_lead"].mass),
+            bins=bins_h,
+            histtype="stepfilled",
+            alpha=0.3,
+            color=color_dh,
+            label=f'Signal ({res["n_signal"]})',
+            density=True,
+        )
+        ax.hist(
+            ak.to_numpy(res["sig_lead"].mass),
+            bins=bins_h,
+            histtype="step",
+            linewidth=2,
+            color=color_dh,
+            density=True,
+        )
     if res["n_qcd"] > 0:
-        ax.hist(ak.to_numpy(res["qcd_lead"].mass), bins=bins_h, histtype="step", linewidth=2, color="grey", linestyle="--", label=f'QCD bkg ({res["n_qcd"]})', density=True)
+        ax.hist(
+            ak.to_numpy(res["qcd_lead"].mass),
+            bins=bins_h,
+            histtype="step",
+            linewidth=2,
+            color="grey",
+            linestyle="--",
+            label=f'QCD bkg ({res["n_qcd"]})',
+            density=True,
+        )
     ax.axvline(125, color="green", linestyle=":", linewidth=1.5)
     ax.axvspan(*sig_window_h, alpha=0.05, color="green")
-    ax.set_xlabel("Leading $m_H$ [GeV]"); ax.set_ylabel("Events / 5 GeV")
-    ax.set_title(f"{label} — Leading Higgs"); ax.legend(fontsize=10)
+    ax.set_xlabel("Leading $m_H$ [GeV]")
+    ax.set_ylabel("Events / 5 GeV")
+    ax.set_title(f"{label} — Leading Higgs")
+    ax.legend(fontsize=10)
 
     ax = axes[1]
     if res["n_signal"] > 0:
-        ax.hist(ak.to_numpy(res["sig_sub"].mass), bins=bins_h, histtype="stepfilled", alpha=0.3, color=color_dh, label="Signal", density=True)
-        ax.hist(ak.to_numpy(res["sig_sub"].mass), bins=bins_h, histtype="step", linewidth=2, color=color_dh, density=True)
+        ax.hist(
+            ak.to_numpy(res["sig_sub"].mass),
+            bins=bins_h,
+            histtype="stepfilled",
+            alpha=0.3,
+            color=color_dh,
+            label="Signal",
+            density=True,
+        )
+        ax.hist(
+            ak.to_numpy(res["sig_sub"].mass),
+            bins=bins_h,
+            histtype="step",
+            linewidth=2,
+            color=color_dh,
+            density=True,
+        )
     if res["n_qcd"] > 0:
-        ax.hist(ak.to_numpy(res["qcd_sub"].mass), bins=bins_h, histtype="step", linewidth=2, color="grey", linestyle="--", label="QCD bkg", density=True)
+        ax.hist(
+            ak.to_numpy(res["qcd_sub"].mass),
+            bins=bins_h,
+            histtype="step",
+            linewidth=2,
+            color="grey",
+            linestyle="--",
+            label="QCD bkg",
+            density=True,
+        )
     ax.axvline(125, color="green", linestyle=":", linewidth=1.5)
     ax.axvspan(*sig_window_h, alpha=0.05, color="green")
-    ax.set_xlabel("Subleading $m_H$ [GeV]"); ax.set_ylabel("Events / 5 GeV")
-    ax.set_title(f"{label} — Subleading Higgs"); ax.legend(fontsize=10)
+    ax.set_xlabel("Subleading $m_H$ [GeV]")
+    ax.set_ylabel("Events / 5 GeV")
+    ax.set_title(f"{label} — Subleading Higgs")
+    ax.legend(fontsize=10)
 
     ax = axes[2]
     if res["n_signal"] > 0:
-        ax.hist(ak.to_numpy(res["sig_hh"].mass), bins=bins_hh, histtype="stepfilled", alpha=0.3, color=color_dh, label="Signal", density=True)
-        ax.hist(ak.to_numpy(res["sig_hh"].mass), bins=bins_hh, histtype="step", linewidth=2, color=color_dh, density=True)
+        ax.hist(
+            ak.to_numpy(res["sig_hh"].mass),
+            bins=bins_hh,
+            histtype="stepfilled",
+            alpha=0.3,
+            color=color_dh,
+            label="Signal",
+            density=True,
+        )
+        ax.hist(
+            ak.to_numpy(res["sig_hh"].mass),
+            bins=bins_hh,
+            histtype="step",
+            linewidth=2,
+            color=color_dh,
+            density=True,
+        )
     if res["n_qcd"] > 0:
-        ax.hist(ak.to_numpy(res["qcd_hh"].mass), bins=bins_hh, histtype="step", linewidth=2, color="grey", linestyle="--", label="QCD bkg", density=True)
+        ax.hist(
+            ak.to_numpy(res["qcd_hh"].mass),
+            bins=bins_hh,
+            histtype="step",
+            linewidth=2,
+            color="grey",
+            linestyle="--",
+            label="QCD bkg",
+            density=True,
+        )
     ax.axvspan(*sig_window_hh, alpha=0.05, color="green")
-    ax.set_xlabel("$m_{HH}$ [GeV]"); ax.set_ylabel("Events / 10 GeV")
-    ax.set_title(f"{label} — $m_{{HH}}$"); ax.legend(fontsize=10)
+    ax.set_xlabel("$m_{HH}$ [GeV]")
+    ax.set_ylabel("Events / 10 GeV")
+    ax.set_title(f"{label} — $m_{{HH}}$")
+    ax.legend(fontsize=10)
 
-    reg_tag = "pT-corrected" if res["has_regression"] and apply_pt_correction else "uncorrected pT"
+    reg_tag = (
+        "pT-corrected"
+        if res["has_regression"] and apply_pt_correction
+        else "uncorrected pT"
+    )
     fig.suptitle(f"Di-Higgs Reconstruction — {label} ({reg_tag})", fontsize=16, y=1.01)
     plt.tight_layout()
     save_fig(fig, f"dihiggs_mass_1d_{WP_SELECTION}")
@@ -2969,33 +3730,60 @@ def main():
 
     bins_2d = np.linspace(0, 300, 61)
     fig, axes = plt.subplots(1, 2, figsize=(20, 8))
-    for ax_idx, (category, lead_key, sub_key, n_events) in enumerate([
-        ("Signal", "sig_lead", "sig_sub", res["n_signal"]),
-        ("QCD Background", "qcd_lead", "qcd_sub", res["n_qcd"]),
-    ]):
+    for ax_idx, (category, lead_key, sub_key, n_events) in enumerate(
+        [
+            ("Signal", "sig_lead", "sig_sub", res["n_signal"]),
+            ("QCD Background", "qcd_lead", "qcd_sub", res["n_qcd"]),
+        ]
+    ):
         ax = axes[ax_idx]
         if n_events > 0:
             lead_mass = ak.to_numpy(res[lead_key].mass)
             sub_mass = ak.to_numpy(res[sub_key].mass)
             r_hh_vals = R_hh_func(lead_mass, sub_mass)
             sel = r_hh_vals < 550.0
-            h = ax.hist2d(lead_mass[sel], sub_mass[sel], bins=[bins_2d, bins_2d], cmap="viridis")
-            ax.axvline(125, color="red", linestyle="--", linewidth=1.5, label="$m_H$ = 125 GeV")
+            h = ax.hist2d(
+                lead_mass[sel], sub_mass[sel], bins=[bins_2d, bins_2d], cmap="viridis"
+            )
+            ax.axvline(
+                125, color="red", linestyle="--", linewidth=1.5, label="$m_H$ = 125 GeV"
+            )
             ax.axhline(120, color="red", linestyle="--", linewidth=1.5)
-            ellipse = Ellipse(xy=(125, 120), width=110, height=96, angle=0,
-                              edgecolor="yellow", facecolor="none", linestyle="--", linewidth=2, label="$R_{HH}$ = 55 GeV")
+            ellipse = Ellipse(
+                xy=(125, 120),
+                width=110,
+                height=96,
+                angle=0,
+                edgecolor="yellow",
+                facecolor="none",
+                linestyle="--",
+                linewidth=2,
+                label="$R_{HH}$ = 55 GeV",
+            )
             ax.add_patch(ellipse)
             n_sel = int(np.sum(sel))
-            ax.set_title(f"{label} — {category}\n({n_sel} events inside $R_{{HH}}$ / {n_events} total)")
+            ax.set_title(
+                f"{label} — {category}\n({n_sel} events inside $R_{{HH}}$ / {n_events} total)"
+            )
             fig.colorbar(h[3], ax=ax, label="Events")
         else:
-            ax.text(0.5, 0.5, f"No {category.lower()} events", ha="center", va="center",
-                    transform=ax.transAxes, fontsize=14)
+            ax.text(
+                0.5,
+                0.5,
+                f"No {category.lower()} events",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=14,
+            )
             ax.set_title(f"{label} — {category}")
-        ax.set_xlabel("Leading Higgs Mass [GeV]"); ax.set_ylabel("Subleading Higgs Mass [GeV]")
+        ax.set_xlabel("Leading Higgs Mass [GeV]")
+        ax.set_ylabel("Subleading Higgs Mass [GeV]")
         ax.legend(loc="upper right", fontsize=10)
 
-    fig.suptitle(f"2D $m_{{H1}}$ vs $m_{{H2}}$ — {label} ({reg_tag})", fontsize=16, y=1.02)
+    fig.suptitle(
+        f"2D $m_{{H1}}$ vs $m_{{H2}}$ — {label} ({reg_tag})", fontsize=16, y=1.02
+    )
     plt.tight_layout()
     save_fig(fig, f"dihiggs_mass_2d_{WP_SELECTION}")
     plt.close(fig)
@@ -3131,7 +3919,13 @@ def main():
                 weights=w,
             )
 
-            ax.axvline(125, color="red", linestyle="--", linewidth=1.5, label="$m_{H1}=125$ GeV")
+            ax.axvline(
+                125,
+                color="red",
+                linestyle="--",
+                linewidth=1.5,
+                label="$m_{H1}=125$ GeV",
+            )
             ax.axhline(120, color="red", linestyle="--", linewidth=1.5)
 
             ellipse = Ellipse(
@@ -3156,7 +3950,9 @@ def main():
                     f"({n_sel}/{n_events} inside $R_{{HH}}$, weighted: {w_sel:.1e}/{w_tot:.1e})"
                 )
             else:
-                ax.set_title(f"{label} - {category}\n({n_sel}/{n_events} inside $R_{{HH}}$)")
+                ax.set_title(
+                    f"{label} - {category}\n({n_sel}/{n_events} inside $R_{{HH}}$)"
+                )
 
             fig.colorbar(
                 h[3],
@@ -3190,17 +3986,21 @@ def main():
 
     print("=" * 90)
     print(f"\nWorking point: {WP_SELECTION} (threshold={PART_BTAG_THRESHOLD:.4f})")
-    print(f"pT regression: {'applied' if res['has_regression'] and apply_pt_correction else 'not applied'}")
+    print(
+        f"pT regression: {'applied' if res['has_regression'] and apply_pt_correction else 'not applied'}"
+    )
     print(f"Collection: {res['collection_key']}")
     print(f"\nAll di-Higgs plots saved to: {plot_dir}")
 
     # ── Cell 25: Attention map visualization & pairwise feature analysis ──
     import torch.nn as nn
     from evaluation.attention import (
-        compute_pairwise_features, AttentionHook, forward_with_attention,
-        forward_with_activations, compute_separability,
+        compute_pairwise_features,
+        AttentionHook,
+        forward_with_attention,
+        forward_with_activations,
+        compute_separability,
     )
-
 
     print("=" * 60)
     print("ATTENTION & PAIRWISE FEATURE ANALYSIS")
@@ -3212,11 +4012,15 @@ def main():
     sample_indices_attn = np.concatenate([signal_indices_attn, background_indices_attn])
     sample_x = all_constituents[sample_indices_attn].float().to(device)
     sample_mask = sample_x[:, :, 1] > 0
-    pairwise_feats, pw_mask = compute_pairwise_features(sample_x.cpu(), sample_mask.cpu())
+    pairwise_feats, pw_mask = compute_pairwise_features(
+        sample_x.cpu(), sample_mask.cpu()
+    )
     model.eval()
     with torch.no_grad():
         attention_maps, u_ij_attn = forward_with_attention(model, sample_x, sample_mask)
-    print(f"Analyzed {len(sample_indices_attn)} jets ({n_samples_attn} signal, {n_samples_attn} background)")
+    print(
+        f"Analyzed {len(sample_indices_attn)} jets ({n_samples_attn} signal, {n_samples_attn} background)"
+    )
     print(f"Particle attention layers: {len(attention_maps['particle_attn'])}")
     print(f"Class attention layers: {len(attention_maps['class_attn'])}")
 
@@ -3231,9 +4035,12 @@ def main():
     fig, axes = plt.subplots(2, 4, figsize=(20, 10))
     axes = axes.flatten()
     feature_names_pairwise = [
-        ("log_delta_R", r"$\log(\Delta R)$"), ("log_k_t", r"$\log(k_T)$"),
-        ("log_z", r"$\log(z)$"), ("log_m_2", r"$\log(m^2)$"),
-        ("d_dxy", r"$\Delta d_{xy}$"), ("d_z0", r"$\Delta z_0$"),
+        ("log_delta_R", r"$\log(\Delta R)$"),
+        ("log_k_t", r"$\log(k_T)$"),
+        ("log_z", r"$\log(z)$"),
+        ("log_m_2", r"$\log(m^2)$"),
+        ("d_dxy", r"$\Delta d_{xy}$"),
+        ("d_z0", r"$\Delta z_0$"),
         ("q_ij", r"$q_i \cdot q_j$"),
     ]
     for idx_pw, (feat_key, feat_label) in enumerate(feature_names_pairwise):
@@ -3256,10 +4063,30 @@ def main():
         sig_vals_pw = sig_vals_pw[np.isfinite(sig_vals_pw)]
         bkg_vals_pw = bkg_vals_pw[np.isfinite(bkg_vals_pw)]
         if len(sig_vals_pw) > 0 and len(bkg_vals_pw) > 0:
-            range_min = min(np.percentile(sig_vals_pw, 1), np.percentile(bkg_vals_pw, 1))
-            range_max = max(np.percentile(sig_vals_pw, 99), np.percentile(bkg_vals_pw, 99))
-            ax.hist(sig_vals_pw, bins=50, range=(range_min, range_max), histtype="step", label="Signal", color="blue", density=True)
-            ax.hist(bkg_vals_pw, bins=50, range=(range_min, range_max), histtype="step", label="Background", color="red", density=True)
+            range_min = min(
+                np.percentile(sig_vals_pw, 1), np.percentile(bkg_vals_pw, 1)
+            )
+            range_max = max(
+                np.percentile(sig_vals_pw, 99), np.percentile(bkg_vals_pw, 99)
+            )
+            ax.hist(
+                sig_vals_pw,
+                bins=50,
+                range=(range_min, range_max),
+                histtype="step",
+                label="Signal",
+                color="blue",
+                density=True,
+            )
+            ax.hist(
+                bkg_vals_pw,
+                bins=50,
+                range=(range_min, range_max),
+                histtype="step",
+                label="Background",
+                color="red",
+                density=True,
+            )
         ax.set_xlabel(feat_label)
         ax.set_ylabel("Density")
         ax.set_title(f"Pairwise Feature: {feat_label}")
@@ -3270,7 +4097,9 @@ def main():
     plt.close(fig)
 
     # Attention map visualization
-    def plot_attention_maps_fn(attn_maps, sample_idx, sample_mask_cpu, is_signal, layer_idx=0):
+    def plot_attention_maps_fn(
+        attn_maps, sample_idx, sample_mask_cpu, is_signal, layer_idx=0
+    ):
         n_heads = attn_maps["particle_attn"][layer_idx].shape[1]
         n_valid = sample_mask_cpu[sample_idx].sum().item()
         fig_am, axes_am = plt.subplots(2, 4, figsize=(16, 8))
@@ -3279,21 +4108,29 @@ def main():
         for h in range(min(n_heads, 8)):
             ax = axes_am[h]
             attn_head = attn[h].numpy()
-            im = ax.imshow(attn_head, cmap="viridis", aspect="auto", vmin=0, vmax=attn_head.max())
+            im = ax.imshow(
+                attn_head, cmap="viridis", aspect="auto", vmin=0, vmax=attn_head.max()
+            )
             ax.set_xlabel("Key Particle")
             ax.set_ylabel("Query Particle")
             ax.set_title(f"Head {h+1}")
             plt.colorbar(im, ax=ax, fraction=0.046)
         label_am = "Signal (b-jet)" if is_signal else "Background"
-        fig_am.suptitle(f"Particle Attention Maps - Layer {layer_idx+1} - {label_am}", fontsize=14)
+        fig_am.suptitle(
+            f"Particle Attention Maps - Layer {layer_idx+1} - {label_am}", fontsize=14
+        )
         plt.tight_layout()
         return fig_am
 
     print("\nPlotting attention maps...")
-    fig_sig = plot_attention_maps_fn(attention_maps, 0, sample_mask.cpu(), is_signal=True, layer_idx=0)
+    fig_sig = plot_attention_maps_fn(
+        attention_maps, 0, sample_mask.cpu(), is_signal=True, layer_idx=0
+    )
     save_fig(fig_sig, "attention_map_signal_layer1")
     plt.close(fig_sig)
-    fig_bkg = plot_attention_maps_fn(attention_maps, n_samples_attn, sample_mask.cpu(), is_signal=False, layer_idx=0)
+    fig_bkg = plot_attention_maps_fn(
+        attention_maps, n_samples_attn, sample_mask.cpu(), is_signal=False, layer_idx=0
+    )
     save_fig(fig_bkg, "attention_map_background_layer1")
     plt.close(fig_bkg)
 
@@ -3307,14 +4144,21 @@ def main():
         ax.set_xlabel("Constituent Index")
         ax.set_ylabel("Attention Weight")
         ax.set_title(f"Signal Jet {i+1}")
-        cls_attn = attention_maps["class_attn"][-1][n_samples_attn + i, :, 0, 1:].mean(dim=0).numpy()
+        cls_attn = (
+            attention_maps["class_attn"][-1][n_samples_attn + i, :, 0, 1:]
+            .mean(dim=0)
+            .numpy()
+        )
         n_valid = sample_mask[n_samples_attn + i].sum().item()
         ax = axes[1, i]
         ax.bar(range(n_valid), cls_attn[:n_valid], color="red")
         ax.set_xlabel("Constituent Index")
         ax.set_ylabel("Attention Weight")
         ax.set_title(f"Background Jet {i+1}")
-    fig.suptitle("Class Token Attention Weights (Which particles the classifier focuses on)", fontsize=14)
+    fig.suptitle(
+        "Class Token Attention Weights (Which particles the classifier focuses on)",
+        fontsize=14,
+    )
     plt.tight_layout()
     save_fig(fig, "class_attention_weights")
     plt.close(fig)
@@ -3333,7 +4177,11 @@ def main():
             n_valid = sample_mask[i].sum().item()
             ptypes = sample_particle_types[i, :n_valid]
             colors = [
-                PARTICLE_TYPE_COLORS[int(p)] if 0 <= int(p) < N_PARTICLE_TYPES else "#999999"
+                (
+                    PARTICLE_TYPE_COLORS[int(p)]
+                    if 0 <= int(p) < N_PARTICLE_TYPES
+                    else "#999999"
+                )
                 for p in ptypes
             ]
 
@@ -3343,11 +4191,19 @@ def main():
             ax.set_ylabel("Attention Weight")
             ax.set_title(f"Signal Jet {i+1}")
 
-            cls_attn = attention_maps["class_attn"][-1][n_samples_attn + i, :, 0, 1:].mean(dim=0).numpy()
+            cls_attn = (
+                attention_maps["class_attn"][-1][n_samples_attn + i, :, 0, 1:]
+                .mean(dim=0)
+                .numpy()
+            )
             n_valid = sample_mask[n_samples_attn + i].sum().item()
             ptypes = sample_particle_types[n_samples_attn + i, :n_valid]
             colors = [
-                PARTICLE_TYPE_COLORS[int(p)] if 0 <= int(p) < N_PARTICLE_TYPES else "#999999"
+                (
+                    PARTICLE_TYPE_COLORS[int(p)]
+                    if 0 <= int(p) < N_PARTICLE_TYPES
+                    else "#999999"
+                )
                 for p in ptypes
             ]
 
@@ -3368,7 +4224,9 @@ def main():
             fontsize=10,
             bbox_to_anchor=(0.5, 1.02),
         )
-        fig.suptitle("Class Token Attention - Colored by Particle Type", fontsize=14, y=1.05)
+        fig.suptitle(
+            "Class Token Attention - Colored by Particle Type", fontsize=14, y=1.05
+        )
         plt.tight_layout()
         save_fig(fig, "class_attention_by_particle_type")
         plt.close(fig)
@@ -3387,7 +4245,11 @@ def main():
         n_valid = avg_mask[i].sum().item()
         if n_valid > 1:
             dr = pairwise_avg["delta_R"][i, :n_valid, :n_valid].numpy()
-            attn = avg_attention_maps["particle_attn"][0][i, :, :n_valid, :n_valid].mean(dim=0).numpy()
+            attn = (
+                avg_attention_maps["particle_attn"][0][i, :, :n_valid, :n_valid]
+                .mean(dim=0)
+                .numpy()
+            )
             for j in range(n_valid):
                 for kk in range(j + 1, n_valid):
                     delta_r_vals_attn.append(dr[j, kk])
@@ -3399,8 +4261,14 @@ def main():
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     ax = axes[0]
-    hb = ax.hexbin(delta_r_vals_attn, attn_vals_attn, gridsize=50, cmap="viridis",
-                   extent=[0, 2, 0, np.percentile(attn_vals_attn, 99)], mincnt=1)
+    hb = ax.hexbin(
+        delta_r_vals_attn,
+        attn_vals_attn,
+        gridsize=50,
+        cmap="viridis",
+        extent=[0, 2, 0, np.percentile(attn_vals_attn, 99)],
+        mincnt=1,
+    )
     ax.set_xlabel(r"$\Delta R$")
     ax.set_ylabel("Attention Weight")
     ax.set_title("Attention Weight vs Angular Distance")
@@ -3410,9 +4278,19 @@ def main():
     dr_bins = np.linspace(0, 2, 20)
     sig_attn_means, bkg_attn_means = [], []
     for j in range(len(dr_bins) - 1):
-        bin_mask = (delta_r_vals_attn >= dr_bins[j]) & (delta_r_vals_attn < dr_bins[j + 1])
-        sig_attn_means.append(np.mean(attn_vals_attn[bin_mask & sig_mask_v]) if (bin_mask & sig_mask_v).sum() > 0 else np.nan)
-        bkg_attn_means.append(np.mean(attn_vals_attn[bin_mask & ~sig_mask_v]) if (bin_mask & ~sig_mask_v).sum() > 0 else np.nan)
+        bin_mask = (delta_r_vals_attn >= dr_bins[j]) & (
+            delta_r_vals_attn < dr_bins[j + 1]
+        )
+        sig_attn_means.append(
+            np.mean(attn_vals_attn[bin_mask & sig_mask_v])
+            if (bin_mask & sig_mask_v).sum() > 0
+            else np.nan
+        )
+        bkg_attn_means.append(
+            np.mean(attn_vals_attn[bin_mask & ~sig_mask_v])
+            if (bin_mask & ~sig_mask_v).sum() > 0
+            else np.nan
+        )
     dr_centers = (dr_bins[:-1] + dr_bins[1:]) / 2
     ax.plot(dr_centers, sig_attn_means, "b-o", label="Signal", markersize=5)
     ax.plot(dr_centers, bkg_attn_means, "r-o", label="Background", markersize=5)
@@ -3426,7 +4304,9 @@ def main():
 
     if all_constituents.shape[2] > 12:
         # Mean class attention by particle type (aggregated)
-        avg_cls_attn = avg_attention_maps["class_attn"][-1][:, :, 0, 1:].mean(dim=1).numpy()
+        avg_cls_attn = (
+            avg_attention_maps["class_attn"][-1][:, :, 0, 1:].mean(dim=1).numpy()
+        )
         avg_particle_types = np.argmax(avg_x[:, :, 12:17].cpu().numpy(), axis=-1)
         avg_mask_np_typed = avg_mask.cpu().numpy()
         avg_particle_types[~avg_mask_np_typed] = -1
@@ -3545,7 +4425,10 @@ def main():
                         color="white" if abs(data[ii, jj]) > threshold else "black",
                     )
 
-        plt.suptitle("Particle-Type Attention Affinity Matrix (Layer 0, Head-Averaged)", fontsize=14)
+        plt.suptitle(
+            "Particle-Type Attention Affinity Matrix (Layer 0, Head-Averaged)",
+            fontsize=14,
+        )
         plt.tight_layout()
         save_fig(fig, "particle_type_attention_affinity")
         plt.close(fig)
@@ -3559,7 +4442,11 @@ def main():
             if n_valid < 2:
                 continue
             dr = pairwise_avg["delta_R"][i, :n_valid, :n_valid].numpy()
-            attn = avg_attention_maps["particle_attn"][0][i, :, :n_valid, :n_valid].mean(dim=0).numpy()
+            attn = (
+                avg_attention_maps["particle_attn"][0][i, :, :n_valid, :n_valid]
+                .mean(dim=0)
+                .numpy()
+            )
             ptypes_i = avg_particle_types[i, :n_valid]
 
             for q in range(n_valid):
@@ -3584,7 +4471,9 @@ def main():
             means = []
             for b in range(len(dr_bins) - 1):
                 bin_mask = (dr_arr >= dr_bins[b]) & (dr_arr < dr_bins[b + 1])
-                means.append(attn_arr[bin_mask].mean() if bin_mask.sum() > 0 else np.nan)
+                means.append(
+                    attn_arr[bin_mask].mean() if bin_mask.sum() > 0 else np.nan
+                )
 
             axes[0].plot(
                 dr_centers,
@@ -3609,7 +4498,11 @@ def main():
             if n_valid < 2:
                 continue
             dr = pairwise_avg["delta_R"][i, :n_valid, :n_valid].numpy()
-            attn = avg_attention_maps["particle_attn"][0][i, :, :n_valid, :n_valid].mean(dim=0).numpy()
+            attn = (
+                avg_attention_maps["particle_attn"][0][i, :, :n_valid, :n_valid]
+                .mean(dim=0)
+                .numpy()
+            )
             ptypes_i = avg_particle_types[i, :n_valid]
 
             for q in range(n_valid):
@@ -3631,7 +4524,9 @@ def main():
             means = []
             for b in range(len(dr_bins) - 1):
                 bin_mask = (dr_arr >= dr_bins[b]) & (dr_arr < dr_bins[b + 1])
-                means.append(attn_arr[bin_mask].mean() if bin_mask.sum() > 0 else np.nan)
+                means.append(
+                    attn_arr[bin_mask].mean() if bin_mask.sum() > 0 else np.nan
+                )
 
             axes[1].plot(
                 dr_centers,
@@ -3680,7 +4575,10 @@ def main():
     print("\nPlotting activation magnitude distributions...")
     layer_names_act = (
         ["embedding"]
-        + [f"particle_attn_{i+1}" for i in range(len(activations["particle_attn_layers"]))]
+        + [
+            f"particle_attn_{i+1}"
+            for i in range(len(activations["particle_attn_layers"]))
+        ]
         + ["pre_cls"]
         + [f"cls_attn_{i+1}" for i in range(len(activations["cls_attn_layers"]))]
         + ["final_cls_token"]
@@ -3693,7 +4591,9 @@ def main():
     layer_activations_list.extend(activations["cls_attn_layers"])
     layer_activations_list.append(activations["final_cls_token"].unsqueeze(1))
 
-    for idx_la, (name_la, act) in enumerate(zip(layer_names_act, layer_activations_list)):
+    for idx_la, (name_la, act) in enumerate(
+        zip(layer_names_act, layer_activations_list)
+    ):
         if idx_la >= len(axes):
             break
         ax = axes[idx_la]
@@ -3705,8 +4605,26 @@ def main():
         bkg_act = act_flat[vis_labels == 0].flatten()
         range_min = min(np.percentile(sig_act, 1), np.percentile(bkg_act, 1))
         range_max = max(np.percentile(sig_act, 99), np.percentile(bkg_act, 99))
-        ax.hist(sig_act, bins=50, range=(range_min, range_max), histtype="step", label="Signal", color="blue", density=True, alpha=0.8)
-        ax.hist(bkg_act, bins=50, range=(range_min, range_max), histtype="step", label="Background", color="red", density=True, alpha=0.8)
+        ax.hist(
+            sig_act,
+            bins=50,
+            range=(range_min, range_max),
+            histtype="step",
+            label="Signal",
+            color="blue",
+            density=True,
+            alpha=0.8,
+        )
+        ax.hist(
+            bkg_act,
+            bins=50,
+            range=(range_min, range_max),
+            histtype="step",
+            label="Background",
+            color="red",
+            density=True,
+            alpha=0.8,
+        )
         ax.set_xlabel("Activation Value")
         ax.set_ylabel("Density")
         ax.set_title(f"{name_la}\n(dim={act_flat.shape[-1]})")
@@ -3723,7 +4641,11 @@ def main():
     tsne_layers = {
         "Input (processed)": activations["input_processed"].mean(dim=1).numpy(),
         "After Embedding": activations["embedding"].mean(dim=1).numpy(),
-        f"After ParticleAttn-{len(activations['particle_attn_layers'])}": activations["particle_attn_layers"][-1].mean(dim=1).numpy(),
+        f"After ParticleAttn-{len(activations['particle_attn_layers'])}": activations[
+            "particle_attn_layers"
+        ][-1]
+        .mean(dim=1)
+        .numpy(),
         "Final CLS Token": activations["final_cls_token"].numpy(),
     }
     fig, axes = plt.subplots(2, 2, figsize=(14, 12))
@@ -3737,13 +4659,29 @@ def main():
             layer_act_reduced = layer_act
         tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, n_vis // 4))
         tsne_result = tsne.fit_transform(layer_act_reduced)
-        ax.scatter(tsne_result[vis_labels == 0, 0], tsne_result[vis_labels == 0, 1], c="red", alpha=0.5, s=10, label="Background")
-        ax.scatter(tsne_result[vis_labels == 1, 0], tsne_result[vis_labels == 1, 1], c="blue", alpha=0.5, s=10, label="Signal")
+        ax.scatter(
+            tsne_result[vis_labels == 0, 0],
+            tsne_result[vis_labels == 0, 1],
+            c="red",
+            alpha=0.5,
+            s=10,
+            label="Background",
+        )
+        ax.scatter(
+            tsne_result[vis_labels == 1, 0],
+            tsne_result[vis_labels == 1, 1],
+            c="blue",
+            alpha=0.5,
+            s=10,
+            label="Signal",
+        )
         ax.set_xlabel("t-SNE 1")
         ax.set_ylabel("t-SNE 2")
         ax.set_title(layer_name_ts)
         ax.legend()
-    plt.suptitle("t-SNE Visualization: How Representations Evolve Through Layers", fontsize=14)
+    plt.suptitle(
+        "t-SNE Visualization: How Representations Evolve Through Layers", fontsize=14
+    )
     plt.tight_layout()
     save_fig(fig, "tsne_layer_evolution")
     plt.close(fig)
@@ -3760,7 +4698,9 @@ def main():
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     top_n_nd = 20
     ax = axes[0, 0]
-    ax.barh(range(top_n_nd), neuron_diff[sorted_idx_nd[:top_n_nd]], color="blue", alpha=0.7)
+    ax.barh(
+        range(top_n_nd), neuron_diff[sorted_idx_nd[:top_n_nd]], color="blue", alpha=0.7
+    )
     ax.set_yticks(range(top_n_nd))
     ax.set_yticklabels([f"Neuron {i}" for i in sorted_idx_nd[:top_n_nd]])
     ax.set_xlabel("Mean Activation Difference (Signal - Background)")
@@ -3768,7 +4708,9 @@ def main():
     ax.invert_yaxis()
 
     ax = axes[0, 1]
-    ax.barh(range(top_n_nd), neuron_diff[sorted_idx_nd[-top_n_nd:]], color="red", alpha=0.7)
+    ax.barh(
+        range(top_n_nd), neuron_diff[sorted_idx_nd[-top_n_nd:]], color="red", alpha=0.7
+    )
     ax.set_yticks(range(top_n_nd))
     ax.set_yticklabels([f"Neuron {i}" for i in sorted_idx_nd[-top_n_nd:]])
     ax.set_xlabel("Mean Activation Difference (Signal - Background)")
@@ -3777,15 +4719,21 @@ def main():
 
     ax = axes[1, 0]
     n_show = min(50, embed_dim)
-    top_neurons = sorted_idx_nd[:n_show // 2].tolist() + sorted_idx_nd[-n_show // 2:].tolist()
+    top_neurons = (
+        sorted_idx_nd[: n_show // 2].tolist() + sorted_idx_nd[-n_show // 2 :].tolist()
+    )
     n_jets_hm = 50
-    sig_jets_hm = np.where(vis_labels == 1)[0][:n_jets_hm // 2]
-    bkg_jets_hm = np.where(vis_labels == 0)[0][:n_jets_hm // 2]
+    sig_jets_hm = np.where(vis_labels == 1)[0][: n_jets_hm // 2]
+    bkg_jets_hm = np.where(vis_labels == 0)[0][: n_jets_hm // 2]
     jet_order = np.concatenate([sig_jets_hm, bkg_jets_hm])
     heatmap_data = final_act[jet_order][:, top_neurons]
-    im = ax.imshow(heatmap_data.T, aspect="auto", cmap="RdBu_r",
-                   vmin=-np.percentile(np.abs(heatmap_data), 95),
-                   vmax=np.percentile(np.abs(heatmap_data), 95))
+    im = ax.imshow(
+        heatmap_data.T,
+        aspect="auto",
+        cmap="RdBu_r",
+        vmin=-np.percentile(np.abs(heatmap_data), 95),
+        vmax=np.percentile(np.abs(heatmap_data), 95),
+    )
     ax.axvline(len(sig_jets_hm) - 0.5, color="black", linestyle="--", linewidth=2)
     ax.set_xlabel("Jet Index (Signal | Background)")
     ax.set_ylabel("Neuron Index")
@@ -3810,7 +4758,10 @@ def main():
     separability_stats = []
     layer_order_sep = (
         ["input_processed", "embedding"]
-        + [f"particle_attn_{i}" for i in range(len(activations["particle_attn_layers"]))]
+        + [
+            f"particle_attn_{i}"
+            for i in range(len(activations["particle_attn_layers"]))
+        ]
         + ["pre_cls"]
         + [f"cls_attn_{i}" for i in range(len(activations["cls_attn_layers"]))]
         + ["final_cls_token"]
@@ -3828,20 +4779,47 @@ def main():
 
     for name_sep, act_sep in zip(layer_order_sep, layer_acts_sep):
         mean_fisher, max_fisher, _ = compute_separability(act_sep, vis_labels)
-        separability_stats.append({"layer": name_sep, "mean_fisher": mean_fisher, "max_fisher": max_fisher, "dim": act_sep.shape[1]})
+        separability_stats.append(
+            {
+                "layer": name_sep,
+                "mean_fisher": mean_fisher,
+                "max_fisher": max_fisher,
+                "dim": act_sep.shape[1],
+            }
+        )
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     ax = axes[0]
     x_pos_sep = range(len(separability_stats))
-    ax.bar(x_pos_sep, [s["mean_fisher"] for s in separability_stats], color="steelblue", alpha=0.7)
+    ax.bar(
+        x_pos_sep,
+        [s["mean_fisher"] for s in separability_stats],
+        color="steelblue",
+        alpha=0.7,
+    )
     ax.set_xticks(x_pos_sep)
-    ax.set_xticklabels([s["layer"].replace("_", "\n") for s in separability_stats], rotation=45, ha="right", fontsize=8)
+    ax.set_xticklabels(
+        [s["layer"].replace("_", "\n") for s in separability_stats],
+        rotation=45,
+        ha="right",
+        fontsize=8,
+    )
     ax.set_ylabel("Mean Fisher Discriminant Ratio")
     ax.set_title("Average Class Separability Across Layers")
     ax = axes[1]
-    ax.bar(x_pos_sep, [s["max_fisher"] for s in separability_stats], color="darkorange", alpha=0.7)
+    ax.bar(
+        x_pos_sep,
+        [s["max_fisher"] for s in separability_stats],
+        color="darkorange",
+        alpha=0.7,
+    )
     ax.set_xticks(x_pos_sep)
-    ax.set_xticklabels([s["layer"].replace("_", "\n") for s in separability_stats], rotation=45, ha="right", fontsize=8)
+    ax.set_xticklabels(
+        [s["layer"].replace("_", "\n") for s in separability_stats],
+        rotation=45,
+        ha="right",
+        fontsize=8,
+    )
     ax.set_ylabel("Max Fisher Discriminant Ratio")
     ax.set_title("Best Single-Neuron Separability Across Layers")
     plt.tight_layout()
@@ -3867,16 +4845,44 @@ def main():
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     ax = axes[0]
     sig_mask_const = label_flat_ca == 1
-    ax.scatter(pt_flat_ca[~sig_mask_const], act_flat_ca[~sig_mask_const], alpha=0.1, s=2, c="red", label="Background")
-    ax.scatter(pt_flat_ca[sig_mask_const], act_flat_ca[sig_mask_const], alpha=0.1, s=2, c="blue", label="Signal")
+    ax.scatter(
+        pt_flat_ca[~sig_mask_const],
+        act_flat_ca[~sig_mask_const],
+        alpha=0.1,
+        s=2,
+        c="red",
+        label="Background",
+    )
+    ax.scatter(
+        pt_flat_ca[sig_mask_const],
+        act_flat_ca[sig_mask_const],
+        alpha=0.1,
+        s=2,
+        c="blue",
+        label="Signal",
+    )
     ax.set_xlabel("Constituent $p_T$ [GeV]")
     ax.set_ylabel("Activation Magnitude (L2 norm)")
     ax.set_title("Constituent Activation vs $p_T$")
     ax.legend()
     ax.set_xlim(0, np.percentile(pt_flat_ca, 99))
     ax = axes[1]
-    ax.hist(act_flat_ca[sig_mask_const], bins=50, histtype="step", label="Signal", color="blue", density=True)
-    ax.hist(act_flat_ca[~sig_mask_const], bins=50, histtype="step", label="Background", color="red", density=True)
+    ax.hist(
+        act_flat_ca[sig_mask_const],
+        bins=50,
+        histtype="step",
+        label="Signal",
+        color="blue",
+        density=True,
+    )
+    ax.hist(
+        act_flat_ca[~sig_mask_const],
+        bins=50,
+        histtype="step",
+        label="Background",
+        color="red",
+        density=True,
+    )
     ax.set_xlabel("Activation Magnitude")
     ax.set_ylabel("Density")
     ax.set_title("Per-Constituent Activation Distribution")
@@ -3956,7 +4962,9 @@ def main():
                     if len(vals) > 5000:
                         vals = np.random.choice(vals, 5000, replace=False)
                     box_data.append(vals)
-                    box_labels_list.append(f"{PARTICLE_TYPE_NAMES[pid]}\n({label_name})")
+                    box_labels_list.append(
+                        f"{PARTICLE_TYPE_NAMES[pid]}\n({label_name})"
+                    )
                     box_positions.append(pos)
                     box_colors.append("blue" if label_val == 1 else "red")
                 pos += 1
@@ -4051,7 +5059,10 @@ def main():
         ax2.set_title("Per-Constituent Embedding - by Jet Class")
         ax2.legend(markerscale=5, fontsize=9)
 
-        plt.suptitle("t-SNE of Per-Constituent Representations (Final Particle Attention Layer)", fontsize=13)
+        plt.suptitle(
+            "t-SNE of Per-Constituent Representations (Final Particle Attention Layer)",
+            fontsize=13,
+        )
         plt.tight_layout()
         save_fig(fig, "constituent_tsne_by_particle_type")
         plt.close(fig)
@@ -4073,8 +5084,18 @@ def main():
     print("=" * 60)
 
     input_feature_names = [
-        "Mass", "pT", "η", "φ", "d_xy", "z_0", "Charge",
-        "log(pT_rel)", "Δη", "Δφ", "PUPPI weight", "log(ΔR)",
+        "Mass",
+        "pT",
+        "η",
+        "φ",
+        "d_xy",
+        "z_0",
+        "Charge",
+        "log(pT_rel)",
+        "Δη",
+        "Δφ",
+        "PUPPI weight",
+        "log(ΔR)",
     ]
     n_features_fi = all_constituents.shape[2]
     if n_features_fi > 12:
@@ -4125,7 +5146,9 @@ def main():
         grad_importance_background[feat_idx] = np.mean(bkg_grads) if bkg_grads else 0
     grad_importance = grad_importance / grad_importance.sum()
     grad_importance_signal = grad_importance_signal / grad_importance_signal.sum()
-    grad_importance_background = grad_importance_background / grad_importance_background.sum()
+    grad_importance_background = (
+        grad_importance_background / grad_importance_background.sum()
+    )
 
     # 2. Permutation importance
     print("2. Computing permutation importance (this may take a minute)...")
@@ -4135,15 +5158,23 @@ def main():
     perm_labels = all_labels[:n_perm_samples]
     if "roc_weights" in locals() and len(roc_weights) >= n_perm_samples:
         perm_weights = np.asarray(roc_weights[:n_perm_samples], dtype=np.float64)
-    elif "all_qcd_weights_val" in locals() and len(all_qcd_weights_val) >= n_perm_samples:
-        perm_weights = np.asarray(all_qcd_weights_val[:n_perm_samples], dtype=np.float64)
+    elif (
+        "all_qcd_weights_val" in locals() and len(all_qcd_weights_val) >= n_perm_samples
+    ):
+        perm_weights = np.asarray(
+            all_qcd_weights_val[:n_perm_samples], dtype=np.float64
+        )
     else:
         perm_weights = np.ones(n_perm_samples, dtype=np.float64)
     model.eval()
     with torch.no_grad():
         tmep_outputs = model(perm_x, particle_mask=perm_mask)
-        baseline_outputs_fi = torch.sigmoid(tmep_outputs["classification"]).squeeze().cpu().numpy()
-    baseline_auc = roc_auc_score_fi(perm_labels, baseline_outputs_fi, sample_weight=perm_weights)
+        baseline_outputs_fi = (
+            torch.sigmoid(tmep_outputs["classification"]).squeeze().cpu().numpy()
+        )
+    baseline_auc = roc_auc_score_fi(
+        perm_labels, baseline_outputs_fi, sample_weight=perm_weights
+    )
     print(f"  Baseline AUC: {baseline_auc:.4f}")
 
     perm_importance = np.zeros(len(input_feature_names))
@@ -4156,15 +5187,24 @@ def main():
             perm_x_copy[:, :, feat_idx] = perm_x[perm_indices, :, feat_idx]
             with torch.no_grad():
                 tmep_outputs = model(perm_x_copy, particle_mask=perm_mask)
-                perm_outputs_fi = torch.sigmoid(tmep_outputs["classification"]).squeeze().cpu().numpy()
+                perm_outputs_fi = (
+                    torch.sigmoid(tmep_outputs["classification"])
+                    .squeeze()
+                    .cpu()
+                    .numpy()
+                )
             try:
-                perm_auc = roc_auc_score_fi(perm_labels, perm_outputs_fi, sample_weight=perm_weights)
+                perm_auc = roc_auc_score_fi(
+                    perm_labels, perm_outputs_fi, sample_weight=perm_weights
+                )
                 auc_drops.append(baseline_auc - perm_auc)
             except:
                 auc_drops.append(0)
         perm_importance[feat_idx] = np.mean(auc_drops)
         if (feat_idx + 1) % 4 == 0:
-            print(f"    Processed {feat_idx + 1}/{min(len(input_feature_names), perm_x.shape[2])} features")
+            print(
+                f"    Processed {feat_idx + 1}/{min(len(input_feature_names), perm_x.shape[2])} features"
+            )
 
     # 3. Feature ablation
     print("3. Computing feature ablation importance...")
@@ -4174,16 +5214,20 @@ def main():
         ablated_x[:, :, feat_idx] = 0
         with torch.no_grad():
             tmep_outputs = model(ablated_x, particle_mask=perm_mask)
-            ablated_outputs = torch.sigmoid(tmep_outputs["classification"]).squeeze().cpu().numpy()
+            ablated_outputs = (
+                torch.sigmoid(tmep_outputs["classification"]).squeeze().cpu().numpy()
+            )
         try:
-            ablated_auc = roc_auc_score_fi(perm_labels, ablated_outputs, sample_weight=perm_weights)
+            ablated_auc = roc_auc_score_fi(
+                perm_labels, ablated_outputs, sample_weight=perm_weights
+            )
             ablation_importance[feat_idx] = baseline_auc - ablated_auc
         except:
             ablation_importance[feat_idx] = 0
 
     # 4. Statistical feature separability
     print("4. Computing statistical feature separability...")
-    stat_x = all_constituents[:, :, :len(input_feature_names)].float().numpy()
+    stat_x = all_constituents[:, :, : len(input_feature_names)].float().numpy()
     stat_mask_fi = (all_constituents[:, :, 1] > 0).numpy()
     stat_labels = all_labels
     fisher_scores = np.zeros(len(input_feature_names))
@@ -4197,10 +5241,20 @@ def main():
         bkg_vals_fi = bkg_feat_vals[bkg_mask_vals].flatten()
         sig_mean_fi, bkg_mean_fi = sig_vals_fi.mean(), bkg_vals_fi.mean()
         sig_var_fi, bkg_var_fi = sig_vals_fi.var() + 1e-8, bkg_vals_fi.var() + 1e-8
-        fisher_scores[feat_idx] = (sig_mean_fi - bkg_mean_fi) ** 2 / (sig_var_fi + bkg_var_fi)
+        fisher_scores[feat_idx] = (sig_mean_fi - bkg_mean_fi) ** 2 / (
+            sig_var_fi + bkg_var_fi
+        )
         n_subsample = min(10000, len(sig_vals_fi), len(bkg_vals_fi))
-        sig_sample = np.random.choice(sig_vals_fi, n_subsample, replace=False) if len(sig_vals_fi) > n_subsample else sig_vals_fi
-        bkg_sample = np.random.choice(bkg_vals_fi, n_subsample, replace=False) if len(bkg_vals_fi) > n_subsample else bkg_vals_fi
+        sig_sample = (
+            np.random.choice(sig_vals_fi, n_subsample, replace=False)
+            if len(sig_vals_fi) > n_subsample
+            else sig_vals_fi
+        )
+        bkg_sample = (
+            np.random.choice(bkg_vals_fi, n_subsample, replace=False)
+            if len(bkg_vals_fi) > n_subsample
+            else bkg_vals_fi
+        )
         ks_stat, _ = ks_2samp(sig_sample, bkg_sample)
         ks_scores[feat_idx] = ks_stat
 
@@ -4214,7 +5268,12 @@ def main():
 
     ax = axes[0, 0]
     sorted_idx_fi = np.argsort(grad_importance[:n_plot_features])[::-1]
-    ax.barh(y_pos_fi, grad_importance[:n_plot_features][sorted_idx_fi], color="steelblue", alpha=0.8)
+    ax.barh(
+        y_pos_fi,
+        grad_importance[:n_plot_features][sorted_idx_fi],
+        color="steelblue",
+        alpha=0.8,
+    )
     ax.set_yticks(y_pos_fi)
     ax.set_yticklabels([plot_feature_names[i] for i in sorted_idx_fi])
     ax.set_xlabel("Normalized Mean |Gradient|")
@@ -4223,8 +5282,16 @@ def main():
 
     ax = axes[0, 1]
     sorted_idx_fi = np.argsort(perm_importance[:n_plot_features])[::-1]
-    colors_fi = ["green" if v > 0 else "red" for v in perm_importance[:n_plot_features][sorted_idx_fi]]
-    ax.barh(y_pos_fi, perm_importance[:n_plot_features][sorted_idx_fi], color=colors_fi, alpha=0.8)
+    colors_fi = [
+        "green" if v > 0 else "red"
+        for v in perm_importance[:n_plot_features][sorted_idx_fi]
+    ]
+    ax.barh(
+        y_pos_fi,
+        perm_importance[:n_plot_features][sorted_idx_fi],
+        color=colors_fi,
+        alpha=0.8,
+    )
     ax.set_yticks(y_pos_fi)
     ax.set_yticklabels([plot_feature_names[i] for i in sorted_idx_fi])
     ax.set_xlabel("AUC Drop When Permuted")
@@ -4234,8 +5301,16 @@ def main():
 
     ax = axes[0, 2]
     sorted_idx_fi = np.argsort(ablation_importance[:n_plot_features])[::-1]
-    colors_fi = ["green" if v > 0 else "red" for v in ablation_importance[:n_plot_features][sorted_idx_fi]]
-    ax.barh(y_pos_fi, ablation_importance[:n_plot_features][sorted_idx_fi], color=colors_fi, alpha=0.8)
+    colors_fi = [
+        "green" if v > 0 else "red"
+        for v in ablation_importance[:n_plot_features][sorted_idx_fi]
+    ]
+    ax.barh(
+        y_pos_fi,
+        ablation_importance[:n_plot_features][sorted_idx_fi],
+        color=colors_fi,
+        alpha=0.8,
+    )
     ax.set_yticks(y_pos_fi)
     ax.set_yticklabels([plot_feature_names[i] for i in sorted_idx_fi])
     ax.set_xlabel("AUC Drop When Zeroed")
@@ -4245,7 +5320,12 @@ def main():
 
     ax = axes[1, 0]
     sorted_idx_fi = np.argsort(fisher_scores[:n_plot_features])[::-1]
-    ax.barh(y_pos_fi, fisher_scores[:n_plot_features][sorted_idx_fi], color="darkorange", alpha=0.8)
+    ax.barh(
+        y_pos_fi,
+        fisher_scores[:n_plot_features][sorted_idx_fi],
+        color="darkorange",
+        alpha=0.8,
+    )
     ax.set_yticks(y_pos_fi)
     ax.set_yticklabels([plot_feature_names[i] for i in sorted_idx_fi])
     ax.set_xlabel("Fisher Discriminant Ratio")
@@ -4254,7 +5334,9 @@ def main():
 
     ax = axes[1, 1]
     sorted_idx_fi = np.argsort(ks_scores[:n_plot_features])[::-1]
-    ax.barh(y_pos_fi, ks_scores[:n_plot_features][sorted_idx_fi], color="purple", alpha=0.8)
+    ax.barh(
+        y_pos_fi, ks_scores[:n_plot_features][sorted_idx_fi], color="purple", alpha=0.8
+    )
     ax.set_yticks(y_pos_fi)
     ax.set_yticklabels([plot_feature_names[i] for i in sorted_idx_fi])
     ax.set_xlabel("KS Statistic")
@@ -4262,10 +5344,12 @@ def main():
     ax.invert_yaxis()
 
     ax = axes[1, 2]
+
     def normalize_scores(scores):
         if scores.max() - scores.min() > 0:
             return (scores - scores.min()) / (scores.max() - scores.min())
         return scores
+
     combined_score = (
         normalize_scores(grad_importance[:n_plot_features])
         + normalize_scores(np.maximum(perm_importance[:n_plot_features], 0))
@@ -4280,7 +5364,10 @@ def main():
     ax.set_xlabel("Combined Importance Score")
     ax.set_title("Overall Feature Ranking")
     ax.invert_yaxis()
-    plt.suptitle("Feature Importance Analysis for Signal vs Background Discrimination", fontsize=14)
+    plt.suptitle(
+        "Feature Importance Analysis for Signal vs Background Discrimination",
+        fontsize=14,
+    )
     plt.tight_layout()
     save_fig(fig, "feature_importance_analysis")
     plt.close(fig)
@@ -4289,8 +5376,22 @@ def main():
     fig, ax = plt.subplots(figsize=(12, 6))
     x_fi = np.arange(n_plot_features)
     width_fi = 0.35
-    ax.bar(x_fi - width_fi / 2, grad_importance_signal[:n_plot_features], width_fi, label="Signal (b-jets)", color="blue", alpha=0.7)
-    ax.bar(x_fi + width_fi / 2, grad_importance_background[:n_plot_features], width_fi, label="Background", color="red", alpha=0.7)
+    ax.bar(
+        x_fi - width_fi / 2,
+        grad_importance_signal[:n_plot_features],
+        width_fi,
+        label="Signal (b-jets)",
+        color="blue",
+        alpha=0.7,
+    )
+    ax.bar(
+        x_fi + width_fi / 2,
+        grad_importance_background[:n_plot_features],
+        width_fi,
+        label="Background",
+        color="red",
+        alpha=0.7,
+    )
     ax.set_xlabel("Feature")
     ax.set_ylabel("Normalized Mean |Gradient|")
     ax.set_title("Gradient Importance: Signal vs Background")
@@ -4386,7 +5487,7 @@ def main():
         n_type_features = min(12, len(input_feature_names), perm_x.shape[2])
         type_feature_names = input_feature_names[:n_type_features]
 
-        ptype_onehot = perm_x[:, :, 12: 12 + n_particle_types]
+        ptype_onehot = perm_x[:, :, 12 : 12 + n_particle_types]
         ptype_idx = torch.argmax(ptype_onehot, dim=-1)
         has_ptype = ptype_onehot.sum(dim=-1) > 0
         valid_const = perm_mask & has_ptype
@@ -4399,8 +5500,13 @@ def main():
 
         n_perm_local = n_permutations
         perm_weights = np.ones(n_perm_samples, dtype=np.float64)
-        if "all_qcd_weights_val" in locals() and len(all_qcd_weights_val) >= n_perm_samples:
-            perm_weights = np.asarray(all_qcd_weights_val[:n_perm_samples], dtype=np.float64)
+        if (
+            "all_qcd_weights_val" in locals()
+            and len(all_qcd_weights_val) >= n_perm_samples
+        ):
+            perm_weights = np.asarray(
+                all_qcd_weights_val[:n_perm_samples], dtype=np.float64
+            )
 
         try:
             baseline_auc_type = roc_auc_score_fi(
@@ -4424,20 +5530,31 @@ def main():
                     sel_sig = type_mask & sig_row_mask[:, None]
                     vals_sig = x_perm_t[:, :, f_idx][sel_sig]
                     if vals_sig.numel() > 1:
-                        vals_sig = vals_sig[torch.randperm(vals_sig.numel(), device=perm_x.device)]
+                        vals_sig = vals_sig[
+                            torch.randperm(vals_sig.numel(), device=perm_x.device)
+                        ]
                         x_perm_t[:, :, f_idx][sel_sig] = vals_sig
 
                     sel_bkg = type_mask & bkg_row_mask[:, None]
                     vals_bkg = x_perm_t[:, :, f_idx][sel_bkg]
                     if vals_bkg.numel() > 1:
-                        vals_bkg = vals_bkg[torch.randperm(vals_bkg.numel(), device=perm_x.device)]
+                        vals_bkg = vals_bkg[
+                            torch.randperm(vals_bkg.numel(), device=perm_x.device)
+                        ]
                         x_perm_t[:, :, f_idx][sel_bkg] = vals_bkg
 
                     with torch.no_grad():
                         eval_mask = perm_mask if f_idx != 1 else (x_perm_t[:, :, 1] > 0)
-                        s_perm_t = torch.sigmoid(
-                            model(x_perm_t, particle_mask=eval_mask)["classification"]
-                        ).squeeze().cpu().numpy()
+                        s_perm_t = (
+                            torch.sigmoid(
+                                model(x_perm_t, particle_mask=eval_mask)[
+                                    "classification"
+                                ]
+                            )
+                            .squeeze()
+                            .cpu()
+                            .numpy()
+                        )
 
                     auc_perm_t = roc_auc_score_fi(
                         perm_labels,
@@ -4452,9 +5569,14 @@ def main():
                 x_zero_t[:, :, f_idx][type_mask] = 0.0
                 with torch.no_grad():
                     eval_mask = perm_mask if f_idx != 1 else (x_zero_t[:, :, 1] > 0)
-                    s_zero_t = torch.sigmoid(
-                        model(x_zero_t, particle_mask=eval_mask)["classification"]
-                    ).squeeze().cpu().numpy()
+                    s_zero_t = (
+                        torch.sigmoid(
+                            model(x_zero_t, particle_mask=eval_mask)["classification"]
+                        )
+                        .squeeze()
+                        .cpu()
+                        .numpy()
+                    )
 
                 auc_zero_t = roc_auc_score_fi(
                     perm_labels,
@@ -4499,7 +5621,15 @@ def main():
                 pos_base += np.where(vals >= 0, vals, 0.0)
                 neg_base += np.where(vals < 0, vals, 0.0)
 
-            ax.scatter(totals, y, marker="|", s=260, color="black", zorder=4, label="Total (sum)")
+            ax.scatter(
+                totals,
+                y,
+                marker="|",
+                s=260,
+                color="black",
+                zorder=4,
+                label="Total (sum)",
+            )
             ax.axvline(0.0, color="black", linestyle="--", alpha=0.65)
             ax.set_yticks(y)
             ax.set_yticklabels(feat_sorted)
@@ -4538,10 +5668,16 @@ def main():
             p_top = np.argsort(perm_by_type[pid])[::-1][:3]
             a_top = np.argsort(abla_by_type[pid])[::-1][:3]
             p_txt = ", ".join(
-                [f"{type_feature_names[i]} ({perm_by_type[pid, i]:+.4f})" for i in p_top]
+                [
+                    f"{type_feature_names[i]} ({perm_by_type[pid, i]:+.4f})"
+                    for i in p_top
+                ]
             )
             a_txt = ", ".join(
-                [f"{type_feature_names[i]} ({abla_by_type[pid, i]:+.4f})" for i in a_top]
+                [
+                    f"{type_feature_names[i]} ({abla_by_type[pid, i]:+.4f})"
+                    for i in a_top
+                ]
             )
             print(f"  {ptype_names[pid]}:")
             print(f"    Permute: {p_txt}")
@@ -4564,14 +5700,18 @@ def main():
         save_fig(fig_stacked_ablate, "stacked_ablation_importance_by_particle_type")
         plt.close(fig_stacked_perm)
         plt.close(fig_stacked_ablate)
-        print("Saved stacked bar charts for both permutation and ablation importance by particle type.")
+        print(
+            "Saved stacked bar charts for both permutation and ablation importance by particle type."
+        )
         print("Done with particle-type-specific permutation and ablation importance.")
 
     # Feature correlation with model output
     print("\nComputing feature correlations with model output...")
     with torch.no_grad():
         tmep_outputs = model(perm_x, particle_mask=perm_mask)
-        pred_outputs_fi = torch.sigmoid(tmep_outputs["classification"]).squeeze().cpu().numpy()
+        pred_outputs_fi = (
+            torch.sigmoid(tmep_outputs["classification"]).squeeze().cpu().numpy()
+        )
     mean_features = np.zeros((n_perm_samples, n_plot_features))
     for i in range(n_perm_samples):
         n_valid = int(perm_mask[i].sum().item())
@@ -4579,7 +5719,9 @@ def main():
             mean_features[i, f_idx] = perm_x[i, :n_valid, f_idx].cpu().numpy().mean()
     feature_pred_corr = np.zeros(n_plot_features)
     for f_idx in range(n_plot_features):
-        feature_pred_corr[f_idx] = np.corrcoef(mean_features[:, f_idx], pred_outputs_fi)[0, 1]
+        feature_pred_corr[f_idx] = np.corrcoef(
+            mean_features[:, f_idx], pred_outputs_fi
+        )[0, 1]
 
     fig, ax = plt.subplots(figsize=(12, 6))
     colors_corr = ["blue" if c > 0 else "red" for c in feature_pred_corr]
@@ -4599,16 +5741,22 @@ def main():
     print("\n" + "=" * 80)
     print("FEATURE IMPORTANCE SUMMARY")
     print("=" * 80)
-    print(f"{'Feature':<15} {'Gradient':>10} {'Permute':>10} {'Ablation':>10} {'Fisher':>10} {'KS':>10} {'Combined':>10}")
+    print(
+        f"{'Feature':<15} {'Gradient':>10} {'Permute':>10} {'Ablation':>10} {'Fisher':>10} {'KS':>10} {'Combined':>10}"
+    )
     print("-" * 80)
     for i in range(n_plot_features):
-        print(f"{plot_feature_names[i]:<15} {grad_importance[i]:>10.4f} {perm_importance[i]:>10.4f} {ablation_importance[i]:>10.4f} {fisher_scores[i]:>10.4f} {ks_scores[i]:>10.4f} {combined_score[i]:>10.4f}")
+        print(
+            f"{plot_feature_names[i]:<15} {grad_importance[i]:>10.4f} {perm_importance[i]:>10.4f} {ablation_importance[i]:>10.4f} {fisher_scores[i]:>10.4f} {ks_scores[i]:>10.4f} {combined_score[i]:>10.4f}"
+        )
     print("\n" + "=" * 80)
     print("TOP 5 MOST IMPORTANT FEATURES (by combined score):")
     print("=" * 80)
     top_5_idx = np.argsort(combined_score)[::-1][:5]
     for rank, idx_t5 in enumerate(top_5_idx, 1):
-        print(f"  {rank}. {plot_feature_names[idx_t5]} (score: {combined_score[idx_t5]:.4f})")
+        print(
+            f"  {rank}. {plot_feature_names[idx_t5]} (score: {combined_score[idx_t5]:.4f})"
+        )
     print(f"\n{'='*60}")
     print("Feature importance analysis complete!")
     print(f"{'='*60}")
@@ -4660,20 +5808,36 @@ def main():
     true_negatives_mb = (predictions_mb == 0) & (all_labels == 0)
 
     print(f"Threshold: {threshold_mb}")
-    print(f"  True Positives:  {true_positives_mb.sum():>6} ({100*true_positives_mb.sum()/all_labels.sum():.1f}% of signal)")
-    print(f"  True Negatives:  {true_negatives_mb.sum():>6} ({100*true_negatives_mb.sum()/(len(all_labels)-all_labels.sum()):.1f}% of background)")
-    print(f"  False Positives: {false_positives_mb.sum():>6} (background misclassified as signal)")
-    print(f"  False Negatives: {false_negatives_mb.sum():>6} (signal misclassified as background)")
+    print(
+        f"  True Positives:  {true_positives_mb.sum():>6} ({100*true_positives_mb.sum()/all_labels.sum():.1f}% of signal)"
+    )
+    print(
+        f"  True Negatives:  {true_negatives_mb.sum():>6} ({100*true_negatives_mb.sum()/(len(all_labels)-all_labels.sum()):.1f}% of background)"
+    )
+    print(
+        f"  False Positives: {false_positives_mb.sum():>6} (background misclassified as signal)"
+    )
+    print(
+        f"  False Negatives: {false_negatives_mb.sum():>6} (signal misclassified as background)"
+    )
 
     print("\n  Kinematic properties of misclassified jets:")
     fp_pt = val_jet_pt[false_positives_mb]
     fn_pt = val_jet_pt[false_negatives_mb]
     tp_pt = val_jet_pt[true_positives_mb]
     tn_pt = val_jet_pt[true_negatives_mb]
-    print(f"    False Positives: mean pT = {fp_pt.mean():.1f} GeV, mean |η| = {np.abs(val_jet_eta[false_positives_mb]).mean():.2f}")
-    print(f"    False Negatives: mean pT = {fn_pt.mean():.1f} GeV, mean |η| = {np.abs(val_jet_eta[false_negatives_mb]).mean():.2f}")
-    print(f"    True Positives:  mean pT = {tp_pt.mean():.1f} GeV, mean |η| = {np.abs(val_jet_eta[true_positives_mb]).mean():.2f}")
-    print(f"    True Negatives:  mean pT = {tn_pt.mean():.1f} GeV, mean |η| = {np.abs(val_jet_eta[true_negatives_mb]).mean():.2f}")
+    print(
+        f"    False Positives: mean pT = {fp_pt.mean():.1f} GeV, mean |η| = {np.abs(val_jet_eta[false_positives_mb]).mean():.2f}"
+    )
+    print(
+        f"    False Negatives: mean pT = {fn_pt.mean():.1f} GeV, mean |η| = {np.abs(val_jet_eta[false_negatives_mb]).mean():.2f}"
+    )
+    print(
+        f"    True Positives:  mean pT = {tp_pt.mean():.1f} GeV, mean |η| = {np.abs(val_jet_eta[true_positives_mb]).mean():.2f}"
+    )
+    print(
+        f"    True Negatives:  mean pT = {tn_pt.mean():.1f} GeV, mean |η| = {np.abs(val_jet_eta[true_negatives_mb]).mean():.2f}"
+    )
 
     # 2. Confidence calibration
     print("\n2. CONFIDENCE CALIBRATION")
@@ -4682,7 +5846,9 @@ def main():
     logloss = log_loss(all_labels, np.clip(all_outputs, 1e-7, 1 - 1e-7))
     print(f"  Brier Score: {brier:.4f} (lower is better, perfect = 0)")
     print(f"  Log Loss: {logloss:.4f} (lower is better)")
-    prob_true, prob_pred = calibration_curve(all_labels, all_outputs, n_bins=10, strategy="uniform")
+    prob_true, prob_pred = calibration_curve(
+        all_labels, all_outputs, n_bins=10, strategy="uniform"
+    )
     print(f"\n  Calibration by probability bin:")
     print(f"  {'Predicted':>12} {'Actual':>12} {'Difference':>12}")
     for pt_cal, pp_cal in zip(prob_true, prob_pred):
@@ -4690,7 +5856,9 @@ def main():
     bin_edges_ece = np.linspace(0, 1, 11)
     ece = 0
     for i_ece in range(10):
-        mask_ece = (all_outputs >= bin_edges_ece[i_ece]) & (all_outputs < bin_edges_ece[i_ece + 1])
+        mask_ece = (all_outputs >= bin_edges_ece[i_ece]) & (
+            all_outputs < bin_edges_ece[i_ece + 1]
+        )
         if mask_ece.sum() > 0:
             bin_acc = all_labels[mask_ece].mean()
             bin_conf = all_outputs[mask_ece].mean()
@@ -4705,8 +5873,12 @@ def main():
     hard_threshold_mb = 0.2
     hard_samples = uncertainty_mb < hard_threshold_mb
     easy_samples = uncertainty_mb >= 0.4
-    print(f"  Hard samples (output in [0.3, 0.7]): {hard_samples.sum()} ({100*hard_samples.mean():.1f}%)")
-    print(f"  Easy samples (output < 0.1 or > 0.9): {easy_samples.sum()} ({100*easy_samples.mean():.1f}%)")
+    print(
+        f"  Hard samples (output in [0.3, 0.7]): {hard_samples.sum()} ({100*hard_samples.mean():.1f}%)"
+    )
+    print(
+        f"  Easy samples (output < 0.1 or > 0.9): {easy_samples.sum()} ({100*easy_samples.mean():.1f}%)"
+    )
     hard_acc = (predictions_mb[hard_samples] == all_labels[hard_samples]).mean()
     easy_acc = (predictions_mb[easy_samples] == all_labels[easy_samples]).mean()
     print(f"\n  Accuracy on hard samples: {100*hard_acc:.1f}%")
@@ -4760,12 +5932,18 @@ def main():
         sig_sub = np.random.choice(sig_vals_ol, n_sub, replace=False)
         bkg_sub = np.random.choice(bkg_vals_ol, n_sub, replace=False)
         try:
-            x_range_ol = np.linspace(min(sig_sub.min(), bkg_sub.min()), max(sig_sub.max(), bkg_sub.max()), 100)
+            x_range_ol = np.linspace(
+                min(sig_sub.min(), bkg_sub.min()),
+                max(sig_sub.max(), bkg_sub.max()),
+                100,
+            )
             sig_kde = gaussian_kde(sig_sub)
             bkg_kde = gaussian_kde(bkg_sub)
             sig_pdf = sig_kde(x_range_ol)
             bkg_pdf = bkg_kde(x_range_ol)
-            overlap = np.sum(np.sqrt(sig_pdf * bkg_pdf)) * (x_range_ol[1] - x_range_ol[0])
+            overlap = np.sum(np.sqrt(sig_pdf * bkg_pdf)) * (
+                x_range_ol[1] - x_range_ol[0]
+            )
             feature_overlaps.append(overlap)
         except:
             feature_overlaps.append(1.0)
@@ -4779,8 +5957,12 @@ def main():
     n_signal_mb = all_labels.sum()
     n_background_mb = len(all_labels) - n_signal_mb
     class_ratio = n_signal_mb / len(all_labels)
-    print(f"    Class balance: {100*class_ratio:.1f}% signal / {100*(1-class_ratio):.1f}% background")
-    current_auc = roc_auc_score_fi(all_labels, all_outputs, sample_weight=roc_weights_mb)
+    print(
+        f"    Class balance: {100*class_ratio:.1f}% signal / {100*(1-class_ratio):.1f}% background"
+    )
+    current_auc = roc_auc_score_fi(
+        all_labels, all_outputs, sample_weight=roc_weights_mb
+    )
     print(f"    Random classifier AUC: 0.5000")
     print(f"    Current model AUC: {current_auc:.4f}")
     print(f"    Best k-NN AUC: {best_knn_auc:.4f}")
@@ -4795,22 +5977,36 @@ def main():
     print("-" * 50)
     recommendations = []
     if ece > 0.05:
-        recommendations.append("• Model is poorly calibrated (ECE > 0.05). Consider temperature scaling or Platt calibration.")
+        recommendations.append(
+            "• Model is poorly calibrated (ECE > 0.05). Consider temperature scaling or Platt calibration."
+        )
     if class_ratio < 0.3 or class_ratio > 0.7:
-        recommendations.append("• Class imbalance detected. Consider focal loss or class weighting.")
+        recommendations.append(
+            "• Class imbalance detected. Consider focal loss or class weighting."
+        )
     if best_knn_auc < current_auc:
-        recommendations.append("• Model outperforms k-NN, suggesting good feature learning.")
+        recommendations.append(
+            "• Model outperforms k-NN, suggesting good feature learning."
+        )
     else:
-        recommendations.append(f"• k-NN achieves higher AUC ({best_knn_auc:.4f} vs {current_auc:.4f}). Model may benefit from more capacity or training.")
+        recommendations.append(
+            f"• k-NN achieves higher AUC ({best_knn_auc:.4f} vs {current_auc:.4f}). Model may benefit from more capacity or training."
+        )
     if hard_samples.mean() > 0.3:
-        recommendations.append(f"• {100*hard_samples.mean():.0f}% of samples are hard. Consider curriculum learning or sample weighting.")
+        recommendations.append(
+            f"• {100*hard_samples.mean():.0f}% of samples are hard. Consider curriculum learning or sample weighting."
+        )
     pt_corr_mb = np.corrcoef(val_jet_pt, all_outputs)[0, 1]
     if abs(pt_corr_mb) > 0.3:
-        recommendations.append(f"• Strong pT-score correlation ({pt_corr_mb:.2f}). Consider pT reweighting for robustness.")
+        recommendations.append(
+            f"• Strong pT-score correlation ({pt_corr_mb:.2f}). Consider pT reweighting for robustness."
+        )
     for rec in recommendations:
         print(f"  {rec}")
     if not recommendations:
-        print("  • Model appears well-optimized! Consider ensemble methods or architectural changes for further improvement.")
+        print(
+            "  • Model appears well-optimized! Consider ensemble methods or architectural changes for further improvement."
+        )
 
     # 6. Diagnostic visualization
     print("\nGenerating diagnostic plots...")
@@ -4839,8 +6035,24 @@ def main():
     ax.grid(True, alpha=0.3)
 
     ax = axes[0, 2]
-    ax.hist(all_outputs[all_labels == 1], bins=50, range=(0, 1), histtype="step", label="Signal", color="blue", density=True)
-    ax.hist(all_outputs[all_labels == 0], bins=50, range=(0, 1), histtype="step", label="Background", color="red", density=True)
+    ax.hist(
+        all_outputs[all_labels == 1],
+        bins=50,
+        range=(0, 1),
+        histtype="step",
+        label="Signal",
+        color="blue",
+        density=True,
+    )
+    ax.hist(
+        all_outputs[all_labels == 0],
+        bins=50,
+        range=(0, 1),
+        histtype="step",
+        label="Background",
+        color="red",
+        density=True,
+    )
     ax.axvline(0.5, color="black", linestyle="--", alpha=0.5)
     ax.axvspan(0.3, 0.7, alpha=0.1, color="gray", label="Hard region")
     ax.set_xlabel("Model Output")
@@ -4852,7 +6064,9 @@ def main():
     pt_bin_edges_mb = [25, 50, 75, 100, 150, 200, 300, 500]
     pt_aucs = []
     for i_pt in range(len(pt_bin_edges_mb) - 1):
-        mask_pt = (val_jet_pt >= pt_bin_edges_mb[i_pt]) & (val_jet_pt < pt_bin_edges_mb[i_pt + 1])
+        mask_pt = (val_jet_pt >= pt_bin_edges_mb[i_pt]) & (
+            val_jet_pt < pt_bin_edges_mb[i_pt + 1]
+        )
         if mask_pt.sum() > 50 and len(np.unique(all_labels[mask_pt])) > 1:
             pt_aucs.append(
                 roc_auc_score_fi(
@@ -4865,7 +6079,13 @@ def main():
             pt_aucs.append(np.nan)
     ax.bar(range(len(pt_aucs)), pt_aucs, color="steelblue", alpha=0.7)
     ax.set_xticks(range(len(pt_aucs)))
-    ax.set_xticklabels([f"{pt_bin_edges_mb[i]}-{pt_bin_edges_mb[i+1]}" for i in range(len(pt_bin_edges_mb) - 1)], rotation=45)
+    ax.set_xticklabels(
+        [
+            f"{pt_bin_edges_mb[i]}-{pt_bin_edges_mb[i+1]}"
+            for i in range(len(pt_bin_edges_mb) - 1)
+        ],
+        rotation=45,
+    )
     ax.set_xlabel("pT Range [GeV]")
     ax.set_ylabel("AUC")
     ax.set_title("AUC vs Jet pT")
@@ -4873,9 +6093,27 @@ def main():
     ax.grid(True, alpha=0.3, axis="y")
 
     ax = axes[1, 1]
-    feature_names_short = ["Mass", "pT", "η", "φ", "d_xy", "z_0", "Q", "log(pT_rel)", "Δη", "Δφ", "PUPPI", "log(ΔR)"]
+    feature_names_short = [
+        "Mass",
+        "pT",
+        "η",
+        "φ",
+        "d_xy",
+        "z_0",
+        "Q",
+        "log(pT_rel)",
+        "Δη",
+        "Δφ",
+        "PUPPI",
+        "log(ΔR)",
+    ]
     sorted_idx_ol = np.argsort(feature_overlaps)
-    ax.barh(range(len(feature_overlaps)), feature_overlaps[sorted_idx_ol], color="darkorange", alpha=0.7)
+    ax.barh(
+        range(len(feature_overlaps)),
+        feature_overlaps[sorted_idx_ol],
+        color="darkorange",
+        alpha=0.7,
+    )
     ax.set_yticks(range(len(feature_overlaps)))
     ax.set_yticklabels([feature_names_short[i] for i in sorted_idx_ol])
     ax.set_xlabel("Distribution Overlap (lower = more separable)")
@@ -4904,9 +6142,16 @@ def main():
         f"  Signal: {int(n_signal_mb):,} ({100*class_ratio:.1f}%)\n"
         f"  Background: {int(n_background_mb):,} ({100*(1-class_ratio):.1f}%)\n"
     )
-    ax.text(0.05, 0.95, summary_text, transform=ax.transAxes, fontsize=11,
-            verticalalignment="top", fontfamily="monospace",
-            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5))
+    ax.text(
+        0.05,
+        0.95,
+        summary_text,
+        transform=ax.transAxes,
+        fontsize=11,
+        verticalalignment="top",
+        fontfamily="monospace",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+    )
 
     plt.suptitle("Model Behavior Analysis & Maximum Discriminative Power", fontsize=14)
     plt.tight_layout()
@@ -4920,13 +6165,17 @@ def main():
         val_mask = (all_constituents[:, :, 1] > 0).numpy()
         val_particle_types[~val_mask] = -1
 
-        val_particle_counts = np.zeros((len(all_constituents), N_PARTICLE_TYPES), dtype=int)
+        val_particle_counts = np.zeros(
+            (len(all_constituents), N_PARTICLE_TYPES), dtype=int
+        )
         for pid in range(N_PARTICLE_TYPES):
             val_particle_counts[:, pid] = (val_particle_types == pid).sum(axis=1)
         val_dominant_type = np.argmax(val_particle_counts, axis=1)
 
         print("\n  Misclassification Rate by Dominant Particle Type:")
-        print(f"  {'Type':<20} {'N_jets':>8} {'Error Rate':>12} {'FP Rate':>10} {'FN Rate':>10}")
+        print(
+            f"  {'Type':<20} {'N_jets':>8} {'Error Rate':>12} {'FP Rate':>10} {'FN Rate':>10}"
+        )
         print("  " + "-" * 65)
 
         for pid in range(N_PARTICLE_TYPES):
@@ -4962,11 +6211,20 @@ def main():
         for ax, (cat_mask, cat_name) in zip(axes, categories):
             if int(cat_mask.sum()) > 0:
                 cat_counts = val_particle_counts[cat_mask].mean(axis=0)
-                cat_fracs = cat_counts / cat_counts.sum() if cat_counts.sum() > 0 else cat_counts
+                cat_fracs = (
+                    cat_counts / cat_counts.sum()
+                    if cat_counts.sum() > 0
+                    else cat_counts
+                )
             else:
                 cat_fracs = np.zeros(N_PARTICLE_TYPES)
 
-            ax.bar(range(N_PARTICLE_TYPES), cat_fracs, color=PARTICLE_TYPE_COLORS, alpha=0.8)
+            ax.bar(
+                range(N_PARTICLE_TYPES),
+                cat_fracs,
+                color=PARTICLE_TYPE_COLORS,
+                alpha=0.8,
+            )
             ax.set_xticks(range(N_PARTICLE_TYPES))
             ax.set_xticklabels(short_names, rotation=30, ha="right", fontsize=9)
             ax.set_ylabel("Mean Fraction")
@@ -4993,735 +6251,735 @@ def main():
         print("\nAll analysis complete!")
         return
 
-    # ── Full profile parity: AK8 H-tagging + AK8 di-Higgs sections ───
-    print("\n" + "=" * 70)
-    print("FULL PROFILE NOTEBOOK PARITY: AK8 H-TAGGING")
-    print("=" * 70)
-
-    from sklearn.metrics import roc_curve, auc, roc_auc_score
-    import matplotlib.colors as mcolors
-
-    htag_labels = all_labels.reshape(-1)
-    htag_scores = all_outputs.reshape(-1)
-    htag_weights = all_qcd_weights_val.reshape(-1)
-
-    htag_fpr, htag_tpr, htag_thresholds = roc_curve(
-        htag_labels, htag_scores, sample_weight=htag_weights
-    )
-    htag_auc = auc(htag_fpr, htag_tpr)
-
-    fig1, ax1 = plt.subplots(figsize=(9, 7))
-    ax1.plot(
-        htag_fpr,
-        htag_tpr,
-        color="darkred",
-        linewidth=2,
-        label=f"ParT H-tag (AUC = {htag_auc:.4f})",
-    )
-    ax1.plot([0, 1], [0, 1], "k--", alpha=0.3)
-    ax1.set_xlabel("False Positive Rate (QCD mistag)")
-    ax1.set_ylabel("True Positive Rate (H-tag efficiency)")
-    ax1.set_title("H-Tagging ROC Curve")
-    ax1.legend(loc="lower right")
-    ax1.grid(True, alpha=0.3)
-    ax1.set_xlim(0, 1)
-    ax1.set_ylim(0, 1.05)
-    plt.tight_layout()
-    save_fig(fig1, "htag_roc_linear")
-    plt.close(fig1)
-
-    fig2, ax2 = plt.subplots(figsize=(9, 7))
-    valid_fpr = htag_fpr > 0
-    ax2.plot(
-        htag_fpr[valid_fpr],
-        htag_tpr[valid_fpr],
-        color="darkred",
-        linewidth=2,
-        label=f"ParT H-tag (AUC = {htag_auc:.4f})",
-    )
-    ax2.set_xlabel("Mistag Rate")
-    ax2.set_ylabel("H-Tagging Efficiency")
-    ax2.set_xscale("log")
-    ax2.set_xlim(1e-4, 1.0)
-    ax2.set_ylim(1e-4, 1.05)
-    ax2.set_title("H-Tagging ROC Curve")
-    ax2.legend(loc="lower right")
-    ax2.grid(True, alpha=0.3, which="both")
-    plt.tight_layout()
-    save_fig(fig2, "htag_roc_log")
-    plt.close(fig2)
-
-    def get_htag_wp(fpr_arr, tpr_arr, thresh_arr, target_mistag):
-        idx = np.argmin(np.abs(fpr_arr - target_mistag))
-        return fpr_arr[idx], tpr_arr[idx], thresh_arr[idx]
-
-    htag_wps = []
-    print(f"\nParT H-Tag Working Points (AUC = {htag_auc:.5f}):")
-    for wp_name, target in [("Tight", 0.001), ("Medium", 0.01), ("Loose", 0.1)]:
-        fpr_wp, tpr_wp, thresh_wp = get_htag_wp(htag_fpr, htag_tpr, htag_thresholds, target)
-        print(
-            f"  {wp_name}: TPR={tpr_wp*100:.2f}%, FPR={fpr_wp:.4f}, "
-            f"1/FPR={1/max(fpr_wp,1e-9):.1f}, thresh={thresh_wp:.4f}"
-        )
-        htag_wps.append(thresh_wp)
-
-    htag_pt = val_jet_pt
-    htag_eta = val_jet_eta
-    pt_ranges_hm = [
-        (25, 100),
-        (100, 200),
-        (200, 300),
-        (300, 400),
-        (400, 500),
-        (500, np.inf),
-        (25, np.inf),
-    ]
-    eta_ranges_hm = [(0, 0.5), (0.5, 1.0), (1.0, 1.5), (1.5, 2.4), (0, 1.5), (0, 2.4)]
-
-    n_pt = len(pt_ranges_hm)
-    n_eta = len(eta_ranges_hm)
-    auc_grid = np.full((n_pt, n_eta), np.nan)
-    count_grid = np.zeros((n_pt, n_eta), dtype=int)
-
-    for i_pt_hm, (pt_low, pt_high) in enumerate(pt_ranges_hm):
-        for j_eta_hm, (eta_low, eta_high) in enumerate(eta_ranges_hm):
-            mask_bin = (
-                (htag_pt >= pt_low)
-                & (htag_pt < pt_high)
-                & (np.abs(htag_eta) >= eta_low)
-                & (np.abs(htag_eta) < eta_high)
-            )
-            bin_y = htag_labels[mask_bin]
-            bin_s = htag_scores[mask_bin]
-            bin_w = htag_weights[mask_bin]
-            count_grid[i_pt_hm, j_eta_hm] = len(bin_y)
-
-            if len(np.unique(bin_y)) < 2 or len(bin_y) < 20:
-                continue
-            try:
-                auc_grid[i_pt_hm, j_eta_hm] = roc_auc_score(bin_y, bin_s, sample_weight=bin_w)
-            except ValueError:
-                continue
-
-    pt_labels_hm = [f"[{low},{high})" for low, high in pt_ranges_hm]
-    eta_labels_hm = [f"[{low},{high})" for low, high in eta_ranges_hm]
-
-    fig3, ax3 = plt.subplots(figsize=(9, 7))
-    im_auc = ax3.imshow(auc_grid, aspect="auto", origin="lower", vmin=0.5, vmax=1.0)
-    for i_pt_hm in range(n_pt):
-        for j_eta_hm in range(n_eta):
-            v = auc_grid[i_pt_hm, j_eta_hm]
-            txt = f"{v:.3f}" if not np.isnan(v) else "-"
-            ax3.text(j_eta_hm, i_pt_hm, txt, ha="center", va="center", fontsize=10)
-    ax3.set_xticks(range(n_eta))
-    ax3.set_xticklabels(eta_labels_hm, rotation=30, fontsize=10)
-    ax3.set_yticks(range(n_pt))
-    ax3.set_yticklabels(pt_labels_hm, fontsize=10)
-    ax3.set_xlabel(r"$|\eta|$ bin")
-    ax3.set_ylabel(r"$p_T$ bin [GeV]")
-    ax3.set_title("H-Tag AUC per (pT, |eta|) bin")
-    plt.colorbar(im_auc, ax=ax3, label="AUC")
-    plt.tight_layout()
-    save_fig(fig3, "htag_auc_heatmap")
-    plt.close(fig3)
-
-    fig4, ax4 = plt.subplots(figsize=(9, 7))
-    positive_counts = count_grid[count_grid > 0]
-    vmin_counts = max(1, positive_counts.min()) if positive_counts.size > 0 else 1
-    vmax_counts = max(1, count_grid.max())
-    im_cnt = ax4.imshow(
-        count_grid,
-        aspect="auto",
-        origin="lower",
-        norm=mcolors.LogNorm(vmin=vmin_counts, vmax=vmax_counts),
-    )
-    for i_pt_hm in range(n_pt):
-        for j_eta_hm in range(n_eta):
-            ax4.text(j_eta_hm, i_pt_hm, f"{count_grid[i_pt_hm, j_eta_hm]:,}", ha="center", va="center", fontsize=10, color="white")
-    ax4.set_xticks(range(n_eta))
-    ax4.set_xticklabels(eta_labels_hm, rotation=30, fontsize=10)
-    ax4.set_yticks(range(n_pt))
-    ax4.set_yticklabels(pt_labels_hm, fontsize=10)
-    ax4.set_xlabel(r"$|\eta|$ bin")
-    ax4.set_ylabel(r"$p_T$ bin [GeV]")
-    ax4.set_title("Jet count per bin (signal + background)")
-    plt.colorbar(im_cnt, ax=ax4, label="Count")
-    plt.tight_layout()
-    save_fig(fig4, "htag_count_heatmap")
-    plt.close(fig4)
-
-    wp_names = ["Tight", "Medium", "Loose"]
-    for wp_idx, wp_name in enumerate(wp_names):
-        fig_eff, ax_eff = plt.subplots(figsize=(9, 7))
-        thresh = htag_wps[wp_idx]
-        eff_grid = np.full((n_pt, n_eta), np.nan)
-        rej_grid = np.full((n_pt, n_eta), np.nan)
-
-        for i_pt_hm, (pt_low, pt_high) in enumerate(pt_ranges_hm):
-            for j_eta_hm, (eta_low, eta_high) in enumerate(eta_ranges_hm):
-                mask_bin = (
-                    (htag_pt >= pt_low)
-                    & (htag_pt < pt_high)
-                    & (np.abs(htag_eta) >= eta_low)
-                    & (np.abs(htag_eta) < eta_high)
-                )
-                bin_y = htag_labels[mask_bin]
-                bin_s = htag_scores[mask_bin]
-                bin_w = htag_weights[mask_bin]
-
-                sig_mask_bin = bin_y == 1
-                bkg_mask_bin = bin_y == 0
-                if sig_mask_bin.sum() > 0:
-                    eff_grid[i_pt_hm, j_eta_hm] = np.mean(bin_s[sig_mask_bin] >= thresh)
-                if bkg_mask_bin.sum() > 0:
-                    bkg_pass = np.sum(bin_w[bkg_mask_bin] * (bin_s[bkg_mask_bin] >= thresh))
-                    bkg_total = np.sum(bin_w[bkg_mask_bin])
-                    bkg_eff = bkg_pass / bkg_total if bkg_total > 0 else 0.0
-                    rej_grid[i_pt_hm, j_eta_hm] = 1.0 / bkg_eff if bkg_eff > 0 else np.inf
-
-        im_eff = ax_eff.imshow(eff_grid, aspect="auto", origin="lower", vmin=0, vmax=1)
-        for i_pt_hm in range(n_pt):
-            for j_eta_hm in range(n_eta):
-                vv = eff_grid[i_pt_hm, j_eta_hm]
-                if np.isnan(vv):
-                    txt = "-"
-                else:
-                    rej = rej_grid[i_pt_hm, j_eta_hm]
-                    rej_txt = f"\n1/FPR={rej:.0f}" if np.isfinite(rej) and rej < 1e6 else ""
-                    txt = f"{vv:.2f}{rej_txt}"
-                ax_eff.text(j_eta_hm, i_pt_hm, txt, ha="center", va="center", fontsize=9, color="white")
-
-        ax_eff.set_xticks(range(n_eta))
-        ax_eff.set_xticklabels(eta_labels_hm, rotation=30, fontsize=10)
-        ax_eff.set_yticks(range(n_pt))
-        ax_eff.set_yticklabels(pt_labels_hm, fontsize=10)
-        ax_eff.set_xlabel(r"$|\eta|$ bin")
-        ax_eff.set_ylabel(r"$p_T$ bin [GeV]")
-        ax_eff.set_title(f"H-Tag Signal Efficiency - {wp_name} (thresh={thresh:.4f})")
-        plt.colorbar(im_eff, ax=ax_eff, label="Signal Efficiency")
-        plt.tight_layout()
-        save_fig(fig_eff, f"htag_efficiency_heatmap_{wp_name}")
-        plt.close(fig_eff)
-
-    # AK8 H-tag di-Higgs reconstruction
-    import fastjet
-    from data_pipeline.make_particle_dataset import cluster_candidates
-    from data_pipeline.root_loading import (
-        load_and_prepare_data,
-        select_gen_higgs,
-        one_hot_encode_l1_puppi,
-    )
-    from evaluation.dihiggs import compute_significance_at_luminosity
-    from evaluation.luminosity import signal_weight, scale_qcd_weights_raw
-
-    apply_pt_correction_htag = True
-    HTAG_WP_SELECTION = "medium"
-    htag_wp_index = {"tight": 0, "medium": 1, "loose": 2}[HTAG_WP_SELECTION]
-    HTAG_THRESHOLD = htag_wps[htag_wp_index]
-    AK8_DIST_PARAM = 0.8
-    N_CONSTITUENTS_AK8 = n_constituents_model if n_constituents_model is not None else 128
-
-    dataset_used_htag = config_part.get("training", {}).get("data", {}).get("use_dataset", "pf")
-    if dataset_used_htag == "pf":
-        collection_key_htag = "l1extpf"
-    elif dataset_used_htag == "puppi":
-        collection_key_htag = "l1extpuppi"
-    else:
-        collection_key_htag = "l1barrelextpf"
-    collection_name_htag = config[collection_key_htag]["collection_name"]
-
-    print("\n" + "=" * 60)
-    print("Processing AK8 H-tag di-Higgs reconstruction...")
-    print("=" * 60)
-
-    def cluster_and_score_ak8(
-        events,
-        cfg,
-        collection_key,
-        model,
-        device,
-        config_part,
-        n_constituents,
-        apply_pt_correction=True,
-    ):
-        clustered_jets = cluster_candidates(events, cfg, collection_key, dist_param=AK8_DIST_PARAM)
-        sorted_indices = ak.argsort(clustered_jets.pt, axis=1, ascending=False)
-        l1_clustered = clustered_jets[sorted_indices]
-        matched_cands = l1_clustered.constituents
-        const_pt_sort = ak.argsort(matched_cands.pt, axis=2, ascending=False)
-        matched_cands = matched_cands[const_pt_sort]
-
-        j_pt = l1_clustered.pt[:, :, None]
-        j_eta = l1_clustered.eta[:, :, None]
-        j_phi = l1_clustered.phi[:, :, None]
-
-        m_pt = matched_cands.vector.pt
-        m_eta = matched_cands.vector.eta
-        m_phi = matched_cands.vector.phi
-        m_mass = matched_cands.vector.mass
-        m_dxy = matched_cands.dxy
-        m_z0 = matched_cands.z0
-        m_charge = matched_cands.charge
-        m_w = matched_cands.puppiWeight
-        m_id = matched_cands.id
-
-        log_pt_rel = np.log(np.maximum(m_pt, 1e-3) / np.maximum(j_pt, 1e-3))
-        deta = m_eta - j_eta
-        dphi = m_phi - j_phi
-        dphi = (dphi + np.pi) % (2 * np.pi) - np.pi
-        log_dr = np.log(np.maximum(np.sqrt(deta**2 + dphi**2), 1e-3))
-
-        def pad_and_fill(arr, target=n_constituents):
-            return ak.fill_none(ak.pad_none(arr, target, axis=2, clip=True), 0.0)
-
-        feature_list = [
-            pad_and_fill(m_mass),
-            pad_and_fill(m_pt),
-            pad_and_fill(m_eta),
-            pad_and_fill(m_phi),
-            pad_and_fill(m_dxy),
-            pad_and_fill(m_z0),
-            pad_and_fill(m_charge),
-            pad_and_fill(log_pt_rel),
-            pad_and_fill(deta),
-            pad_and_fill(dphi),
-            pad_and_fill(m_w),
-            pad_and_fill(log_dr),
-            pad_and_fill(m_id),
-        ]
-
-        n_jets_per_event = ak.num(l1_clustered, axis=1)
-        n_actual_constituents = ak.num(matched_cands, axis=2)
-        n_actual_flat = ak.to_numpy(ak.flatten(n_actual_constituents, axis=1))
-
-        x_ini = np.stack([ak.to_numpy(ak.flatten(f, axis=1)) for f in feature_list], axis=-1)
-        flat_ids = x_ini[..., -1]
-        one_hot_ids = one_hot_encode_l1_puppi(flat_ids, n_classes=5)
-        X_feat = np.concatenate([x_ini[..., :-1], one_hot_ids], axis=-1)
-
-        particle_mask = np.zeros((X_feat.shape[0], n_constituents), dtype=bool)
-        for i_evt in range(X_feat.shape[0]):
-            n_real = min(n_actual_flat[i_evt], n_constituents)
-            particle_mask[i_evt, :n_real] = True
-
-        const_vecs = vector.array(
-            {
-                "pt": x_ini[:, :, 1],
-                "eta": x_ini[:, :, 2],
-                "phi": x_ini[:, :, 3],
-                "mass": x_ini[:, :, 0],
-            }
-        )
-        jet_4v = const_vecs.sum(axis=1)
-        flat_jet_pt = np.array(jet_4v.pt)
-        flat_jet_eta = np.array(jet_4v.eta)
-        flat_jet_phi = np.array(jet_4v.phi)
-        flat_jet_mass = np.array(jet_4v.mass)
-
-        batch_size = config_part.get("training", {}).get("batch_size", 512)
-        all_scores, all_reg = [], []
-        model.eval()
-        with torch.no_grad():
-            for start in range(0, len(X_feat), batch_size):
-                end = min(start + batch_size, len(X_feat))
-                xb = torch.tensor(X_feat[start:end], dtype=torch.float32).to(device)
-                mb = torch.tensor(particle_mask[start:end], dtype=torch.bool).to(device)
-                out = model(xb, particle_mask=mb)
-                scores = torch.nn.functional.sigmoid(out["classification"]).squeeze().cpu().numpy()
-                all_scores.append(scores)
-                if "pt" in out:
-                    all_reg.append(out["pt"].squeeze().cpu().numpy())
-                del xb, mb, out
-
-        all_scores = np.concatenate(all_scores)
-        has_reg = len(all_reg) > 0
-        all_reg = np.concatenate(all_reg) if has_reg else None
-
-        corrected_pt = flat_jet_pt * all_reg if (has_reg and apply_pt_correction) else flat_jet_pt
-        corr_vecs = vector.array(
-            {
-                "pt": corrected_pt,
-                "eta": flat_jet_eta,
-                "phi": flat_jet_phi,
-                "mass": flat_jet_mass * (corrected_pt / (flat_jet_pt + 1e-9)),
-            }
-        )
-
-        n_jets_np = ak.to_numpy(n_jets_per_event)
-        cumulative = np.concatenate([[0], np.cumsum(n_jets_np)])
-        evt_pts, evt_etas, evt_phis, evt_masses, evt_scores = [], [], [], [], []
-        for i_evt in range(len(n_jets_np)):
-            s, e = cumulative[i_evt], cumulative[i_evt + 1]
-            evt_pts.append(corr_vecs.pt[s:e])
-            evt_etas.append(corr_vecs.eta[s:e])
-            evt_phis.append(corr_vecs.phi[s:e])
-            evt_masses.append(corr_vecs.mass[s:e])
-            evt_scores.append(all_scores[s:e])
-
-        scored_jets = ak.zip(
-            {
-                "pt": ak.Array(evt_pts),
-                "eta": ak.Array(evt_etas),
-                "phi": ak.Array(evt_phis),
-                "mass": ak.Array(evt_masses),
-                "htag_score": ak.Array(evt_scores),
-            }
-        )
-        scored_jets["vector"] = ak.zip(
-            {
-                "pt": scored_jets.pt,
-                "eta": scored_jets.eta,
-                "phi": scored_jets.phi,
-                "mass": scored_jets.mass,
-            },
-            with_name="Momentum4D",
-        )
-        flush_memory()
-        return scored_jets, has_reg
-
-    root_data_pattern = config["file_pattern"]
-    SIGNAL_CHUNK_SIZE = 20000
-    max_signal_events = min(config.get("max_events", 200000), 200000)
-
-    scored_jets_chunks_htag = []
-    gen_higgs_chunks = []
-    offset = 0
-    events_remaining = max_signal_events
-
-    while events_remaining > 0:
-        chunk_size = min(SIGNAL_CHUNK_SIZE, events_remaining)
-        chunk_events = load_and_prepare_data(
-            root_data_pattern,
-            config["tree_name"],
-            [collection_name_htag, "GenPart"],
-            max_events=chunk_size,
-            correct_pt=False,
-            CONFIG=config,
-            entry_start=offset,
-        )
-        n_loaded = len(chunk_events)
-        if n_loaded == 0:
-            break
-        events_remaining -= n_loaded
-        offset += n_loaded
-
-        chunk_scored, has_reg_htag = cluster_and_score_ak8(
-            chunk_events,
-            config,
-            collection_key_htag,
-            model,
-            device,
-            config_part,
-            N_CONSTITUENTS_AK8,
-            apply_pt_correction_htag,
-        )
-        scored_jets_chunks_htag.append(chunk_scored)
-        gen_higgs_chunks.append(select_gen_higgs(chunk_events))
-        del chunk_events, chunk_scored
-        flush_memory()
-
-    if scored_jets_chunks_htag:
-        scored_jets_htag = ak.concatenate(scored_jets_chunks_htag)
-        gen_higgs_all = ak.concatenate(gen_higgs_chunks)
-    else:
-        scored_jets_htag = ak.Array([])
-        gen_higgs_all = ak.Array([])
-
-    jets_htag_sorted = scored_jets_htag[ak.argsort(scored_jets_htag.htag_score, ascending=False)]
-    jets_htag_pass = jets_htag_sorted[jets_htag_sorted.htag_score > HTAG_THRESHOLD]
-    has_2_tagged = ak.num(jets_htag_pass) >= 2
-    sig_jets_2 = jets_htag_pass[has_2_tagged][:, :2]
-
-    gen_higgs_for_match = gen_higgs_all[has_2_tagged]
-    if len(sig_jets_2) > 0:
-        dr_reco_h = sig_jets_2[:, :, None].vector.deltaR(gen_higgs_for_match[:, None, :].vector)
-        idx_gen_for_reco_h = ak.argmin(dr_reco_h, axis=2)
-        min_dr_reco_h = ak.fill_none(ak.min(dr_reco_h, axis=2), np.inf)
-
-        dr_gen_h = gen_higgs_for_match[:, :, None].vector.deltaR(sig_jets_2[:, None, :].vector)
-        idx_reco_for_gen_h = ak.argmin(dr_gen_h, axis=2)
-        back_check_h = idx_reco_for_gen_h[idx_gen_for_reco_h]
-        reco_idx_h = ak.local_index(sig_jets_2, axis=1)
-        pure_mask_h = (ak.fill_none(back_check_h, -1) == reco_idx_h) & (min_dr_reco_h < AK8_DIST_PARAM)
-        signal_mask_evt_htag = ak.sum(pure_mask_h, axis=1) == 2
-    else:
-        signal_mask_evt_htag = ak.Array([])
-
-    n_signal_htag = int(ak.sum(signal_mask_evt_htag)) if len(signal_mask_evt_htag) > 0 else 0
-    n_total_htag = int(ak.sum(has_2_tagged)) if len(has_2_tagged) > 0 else 0
-
-    sig_jets_htag_2 = sig_jets_2[signal_mask_evt_htag][:, :2] if n_signal_htag > 0 else ak.Array([])
-    if n_signal_htag > 0:
-        h1_vec = sig_jets_htag_2[:, 0].vector
-        h2_vec = sig_jets_htag_2[:, 1].vector
-        is_lead = h1_vec.pt >= h2_vec.pt
-        sig_lead_htag = ak.where(is_lead, h1_vec, h2_vec)
-        sig_sub_htag = ak.where(is_lead, h2_vec, h1_vec)
-        sig_hh_htag = h1_vec + h2_vec
-    else:
-        sig_lead_htag = sig_sub_htag = sig_hh_htag = ak.Array([])
-
-    QCD_CHUNK_SIZE_HTAG = 5000
-    qcd_config_htag = config["QCD_background"]
-    all_qcd_lead_htag, all_qcd_sub_htag, all_qcd_hh_htag = [], [], []
-    all_qcd_weights_htag_list = []
-    n_qcd_total_htag = 0
-    n_qcd_events_processed_htag = 0
-
-    for bin_name, bin_cfg in qcd_config_htag.items():
-        qcd_file_pattern = bin_cfg["file_pattern"]
-        max_events_bin = min(bin_cfg.get("max_events", 20000), 20000)
-        qcd_cfg_htag = dict(config)
-        qcd_cfg_htag["file_pattern"] = qcd_file_pattern
-        qcd_cfg_htag["tree_name"] = bin_cfg["tree_name"]
-
-        offset = 0
-        events_remaining = max_events_bin
-        while events_remaining > 0:
-            chunk_size = min(QCD_CHUNK_SIZE_HTAG, events_remaining)
-            qcd_events = load_and_prepare_data(
-                qcd_file_pattern,
-                bin_cfg["tree_name"],
-                [collection_name_htag],
-                max_events=chunk_size,
-                correct_pt=False,
-                CONFIG=qcd_cfg_htag,
-                entry_start=offset,
-            )
-            n_loaded = len(qcd_events)
-            if n_loaded == 0:
-                break
-            n_qcd_events_processed_htag += n_loaded
-            events_remaining -= n_loaded
-            offset += n_loaded
-
-            qcd_scored_htag, _ = cluster_and_score_ak8(
-                qcd_events,
-                qcd_cfg_htag,
-                collection_key_htag,
-                model,
-                device,
-                config_part,
-                N_CONSTITUENTS_AK8,
-                apply_pt_correction_htag,
-            )
-            qcd_htag_sorted = qcd_scored_htag[ak.argsort(qcd_scored_htag.htag_score, ascending=False)]
-            qcd_htag_pass = qcd_htag_sorted[qcd_htag_sorted.htag_score > HTAG_THRESHOLD]
-            has_2_tagged_qcd = ak.num(qcd_htag_pass) >= 2
-            qcd_2jets = qcd_htag_pass[has_2_tagged_qcd][:, :2]
-
-            n_events_chunk = int(ak.sum(has_2_tagged_qcd))
-            if n_events_chunk > 0:
-                q_h1 = qcd_2jets[:, 0].vector
-                q_h2 = qcd_2jets[:, 1].vector
-                q_is_lead = q_h1.pt >= q_h2.pt
-                q_lead = ak.where(q_is_lead, q_h1, q_h2)
-                q_sub = ak.where(q_is_lead, q_h2, q_h1)
-                q_hh = q_h1 + q_h2
-                all_qcd_lead_htag.append(q_lead)
-                all_qcd_sub_htag.append(q_sub)
-                all_qcd_hh_htag.append(q_hh)
-                all_qcd_weights_htag_list.append(np.full(n_events_chunk, bin_cfg["weight"], dtype=np.float64))
-                n_qcd_total_htag += n_events_chunk
-
-            del qcd_events, qcd_scored_htag, qcd_htag_sorted, qcd_htag_pass, qcd_2jets
-            flush_memory()
-
-    if n_qcd_total_htag > 0:
-        qcd_lead_htag = ak.concatenate(all_qcd_lead_htag)
-        qcd_sub_htag = ak.concatenate(all_qcd_sub_htag)
-        qcd_hh_htag = ak.concatenate(all_qcd_hh_htag)
-        qcd_weights_htag = np.concatenate(all_qcd_weights_htag_list)
-    else:
-        qcd_lead_htag = qcd_sub_htag = qcd_hh_htag = ak.Array([])
-        qcd_weights_htag = np.array([], dtype=np.float64)
-
-    sigma_to_ngen_htag = {bin_cfg["weight"]: bin_cfg["n_gen"] for bin_cfg in qcd_config_htag.values()}
-    htag_dihiggs_result = {
-        "label": f"ParT H-Tag ({HTAG_WP_SELECTION})",
-        "n_total": n_total_htag,
-        "n_signal": n_signal_htag,
-        "n_qcd": n_qcd_total_htag,
-        "sig_lead": sig_lead_htag,
-        "sig_sub": sig_sub_htag,
-        "sig_hh": sig_hh_htag,
-        "qcd_lead": qcd_lead_htag,
-        "qcd_sub": qcd_sub_htag,
-        "qcd_hh": qcd_hh_htag,
-        "qcd_weights": qcd_weights_htag,
-        "sigma_to_ngen": sigma_to_ngen_htag,
-        "collection_key": collection_key_htag,
-        "wp": HTAG_WP_SELECTION,
-        "threshold": HTAG_THRESHOLD,
-        "has_regression": has_reg_htag,
-    }
-
-    print(
-        f"AK8 H-tag reconstruction complete: signal={n_signal_htag}, "
-        f"qcd={n_qcd_total_htag}, qcd_processed={n_qcd_events_processed_htag}"
-    )
-
-    # AK8 mass plots and significance
-    res_h = htag_dihiggs_result
-    label_h = res_h["label"]
-    color_h = "teal"
-    qcd_w_h = res_h.get("qcd_weights", np.ones(res_h["n_qcd"]))
-    sig_window_h = (90, 160)
-    sig_window_hh = (250, 550)
-    bins_mh = np.linspace(0, 300, 61)
-    bins_mhh = np.linspace(200, 800, 61)
-
-    fig = plt.figure(figsize=(10, 7))
-    ax = fig.add_subplot(111)
-    if res_h["n_signal"] > 0:
-        ax.hist(ak.to_numpy(res_h["sig_lead"].mass), bins=bins_mh, histtype="stepfilled", alpha=0.3, color=color_h, label=f'Signal ({res_h["n_signal"]})', density=True)
-        ax.hist(ak.to_numpy(res_h["sig_lead"].mass), bins=bins_mh, histtype="step", linewidth=2, color=color_h, density=True)
-    if res_h["n_qcd"] > 0:
-        ax.hist(ak.to_numpy(res_h["qcd_lead"].mass), bins=bins_mh, histtype="step", linewidth=2, color="grey", linestyle="--", label=f'QCD ({res_h["n_qcd"]} events)', density=True)
-    ax.axvline(125, color="green", linestyle=":", linewidth=1.5)
-    ax.axvspan(*sig_window_h, alpha=0.05, color="green")
-    ax.set_xlabel("Leading $m_H$ [GeV]")
-    ax.set_ylabel("Density")
-    ax.set_title(f"{label_h} - Leading Higgs (AK8)")
-    ax.legend(fontsize=10)
-    plt.tight_layout()
-    save_fig(fig, "htag_dihiggs_mass_leading_full")
-    plt.close(fig)
-
-    fig = plt.figure(figsize=(10, 7))
-    ax = fig.add_subplot(111)
-    if res_h["n_signal"] > 0:
-        ax.hist(ak.to_numpy(res_h["sig_sub"].mass), bins=bins_mh, histtype="stepfilled", alpha=0.3, color=color_h, label="Signal", density=True)
-        ax.hist(ak.to_numpy(res_h["sig_sub"].mass), bins=bins_mh, histtype="step", linewidth=2, color=color_h, density=True)
-    if res_h["n_qcd"] > 0:
-        ax.hist(ak.to_numpy(res_h["qcd_sub"].mass), bins=bins_mh, histtype="step", linewidth=2, color="grey", linestyle="--", label="QCD", density=True)
-    ax.axvline(125, color="green", linestyle=":", linewidth=1.5)
-    ax.axvspan(*sig_window_h, alpha=0.05, color="green")
-    ax.set_xlabel("Subleading $m_H$ [GeV]")
-    ax.set_ylabel("Density")
-    ax.set_title(f"{label_h} - Subleading Higgs (AK8)")
-    ax.legend(fontsize=10)
-    plt.tight_layout()
-    save_fig(fig, "htag_dihiggs_mass_subleading_full")
-    plt.close(fig)
-
-    fig = plt.figure(figsize=(10, 7))
-    ax = fig.add_subplot(111)
-    if res_h["n_signal"] > 0:
-        ax.hist(ak.to_numpy(res_h["sig_hh"].mass), bins=bins_mhh, histtype="stepfilled", alpha=0.3, color=color_h, label="Signal", density=True)
-        ax.hist(ak.to_numpy(res_h["sig_hh"].mass), bins=bins_mhh, histtype="step", linewidth=2, color=color_h, density=True)
-    if res_h["n_qcd"] > 0:
-        ax.hist(ak.to_numpy(res_h["qcd_hh"].mass), bins=bins_mhh, histtype="step", linewidth=2, color="grey", linestyle="--", label="QCD", density=True)
-    ax.axvspan(*sig_window_hh, alpha=0.05, color="green")
-    ax.set_xlabel("$m_{HH}$ [GeV]")
-    ax.set_ylabel("Density")
-    ax.set_title(f"{label_h} - Di-Higgs Mass (AK8)")
-    ax.legend(fontsize=10)
-    plt.tight_layout()
-    save_fig(fig, "htag_dihiggs_mass_mhh_full")
-    plt.close(fig)
-
-    if res_h["n_signal"] > 0 and res_h["n_qcd"] > 0:
-        sig_mh1_h = ak.to_numpy(res_h["sig_lead"].mass)
-        sig_mh2_h = ak.to_numpy(res_h["sig_sub"].mass)
-        bkg_mh1_h = ak.to_numpy(res_h["qcd_lead"].mass)
-        bkg_mh2_h = ak.to_numpy(res_h["qcd_sub"].mass)
-        result_mhh_h = compute_significance_at_luminosity(
-            sig_mh1_h,
-            sig_mh2_h,
-            bkg_mh1_h,
-            bkg_mh2_h,
-            bkg_raw_weights=qcd_w_h,
-            sigma_to_ngen=sigma_to_ngen_htag,
-            n_gen_signal=N_GEN_SIGNAL,
-            luminosity_fb=LUMINOSITY_FB,
-            signal_xsec_pb=SIGNAL_XSEC_PB,
-            region="rectangular",
-            rect_window=sig_window_hh,
-        )
-        print(
-            f"AK8 mHH-window significance: S={result_mhh_h['S']:.1f}, "
-            f"B={result_mhh_h['B']:.3e}, Z={result_mhh_h['significance']:.4f}"
-        )
-
-    # r_HH AK8 region diagnostics
-    if res_h["n_signal"] > 0 and res_h["n_qcd"] > 0:
-        MH_CENTER = 125.0
-        R_HH_CUT_HTAG = 30.0
-
-        sig_lead_m = ak.to_numpy(res_h["sig_lead"].mass)
-        sig_sub_m = ak.to_numpy(res_h["sig_sub"].mass)
-        sig_hh_m = ak.to_numpy(res_h["sig_hh"].mass)
-        bkg_lead_m = ak.to_numpy(res_h["qcd_lead"].mass)
-        bkg_sub_m = ak.to_numpy(res_h["qcd_sub"].mass)
-        bkg_hh_m = ak.to_numpy(res_h["qcd_hh"].mass)
-
-        sig_rhh = np.sqrt((sig_lead_m - MH_CENTER) ** 2 + (sig_sub_m - MH_CENTER) ** 2)
-        bkg_rhh = np.sqrt((bkg_lead_m - MH_CENTER) ** 2 + (bkg_sub_m - MH_CENTER) ** 2)
-        sig_mask_rhh = sig_rhh < R_HH_CUT_HTAG
-        bkg_mask_rhh = bkg_rhh < R_HH_CUT_HTAG
-        sig_mask_mhh = (sig_hh_m >= sig_window_hh[0]) & (sig_hh_m <= sig_window_hh[1])
-        bkg_mask_mhh = (bkg_hh_m >= sig_window_hh[0]) & (bkg_hh_m <= sig_window_hh[1])
-
-        result_rhh_h = compute_significance_at_luminosity(
-            sig_lead_m,
-            sig_sub_m,
-            bkg_lead_m,
-            bkg_sub_m,
-            bkg_raw_weights=qcd_w_h,
-            sigma_to_ngen=sigma_to_ngen_htag,
-            n_gen_signal=N_GEN_SIGNAL,
-            luminosity_fb=LUMINOSITY_FB,
-            signal_xsec_pb=SIGNAL_XSEC_PB,
-            region="circular",
-            r_hh_cut=R_HH_CUT_HTAG,
-        )
-
-        _sw_h = signal_weight(len(sig_lead_m), LUMINOSITY_FB, SIGNAL_XSEC_PB, N_GEN_SIGNAL)
-        _bw_h = scale_qcd_weights_raw(qcd_w_h, sigma_to_ngen_htag, LUMINOSITY_FB)
-        S_comb = float(np.sum(_sw_h[sig_mask_rhh & sig_mask_mhh]))
-        B_comb = float(np.sum(_bw_h[bkg_mask_rhh & bkg_mask_mhh]))
-        Z_comb = S_comb / np.sqrt(S_comb + B_comb) if (S_comb + B_comb) > 0 else 0.0
-
-        fig = plt.figure(figsize=(9, 8))
-        ax = fig.add_subplot(111)
-        ax.scatter(bkg_lead_m, bkg_sub_m, s=2, alpha=0.20, color="grey", label="QCD")
-        ax.scatter(sig_lead_m, sig_sub_m, s=3, alpha=0.35, color="teal", label="Signal")
-        ax.axvline(MH_CENTER, color="green", linestyle=":", alpha=0.6)
-        ax.axhline(MH_CENTER, color="green", linestyle=":", alpha=0.6)
-        circle = plt.Circle((MH_CENTER, MH_CENTER), R_HH_CUT_HTAG, fill=False, color="crimson", lw=2, label=f"r_HH < {R_HH_CUT_HTAG:g}")
-        ax.add_patch(circle)
-        ax.set_xlabel("Leading $m_H$ [GeV]")
-        ax.set_ylabel("Subleading $m_H$ [GeV]")
-        ax.set_title(f"{label_h} - AK8 $m_{{H_1}}$ vs $m_{{H_2}}$ with $r_{{HH}}$ SR")
-        ax.set_xlim(0, 300)
-        ax.set_ylim(0, 300)
-        ax.legend(fontsize=10, loc="upper right")
-        plt.tight_layout()
-        save_fig(fig, "htag_dihiggs_rhh_signal_region_scatter")
-        plt.close(fig)
-
-        fig = plt.figure(figsize=(10, 7))
-        ax = fig.add_subplot(111)
-        bins_rhh = np.linspace(0, 200, 81)
-        ax.hist(sig_rhh, bins=bins_rhh, histtype="stepfilled", alpha=0.25, color="teal", density=True, label="Signal")
-        ax.hist(sig_rhh, bins=bins_rhh, histtype="step", linewidth=2, color="teal", density=True)
-        ax.hist(bkg_rhh, bins=bins_rhh, weights=qcd_w_h, histtype="step", linewidth=2, color="grey", linestyle="--", density=True, label="QCD (weighted)")
-        ax.axvline(R_HH_CUT_HTAG, color="crimson", linestyle="-", linewidth=2, label=f"$r_{{HH}}$ cut = {R_HH_CUT_HTAG:g}")
-        ax.set_xlabel(r"$r_{HH}$ [GeV]")
-        ax.set_ylabel("Density")
-        ax.set_title(f"{label_h} - $r_{{HH}}$ distribution (AK8)")
-        ax.legend(fontsize=10)
-        plt.tight_layout()
-        save_fig(fig, "htag_dihiggs_rhh_distribution")
-        plt.close(fig)
-
-        print(
-            f"AK8 r_HH significance: S={result_rhh_h['S']:.1f}, B={result_rhh_h['B']:.3e}, "
-            f"Z={result_rhh_h['significance']:.4f}; combined(r_HH+mHH): Z={Z_comb:.4f}"
-        )
-
-    print("\nAll analysis complete!")
+    # # ── Full profile parity: AK8 H-tagging + AK8 di-Higgs sections ───
+    # print("\n" + "=" * 70)
+    # print("FULL PROFILE NOTEBOOK PARITY: AK8 H-TAGGING")
+    # print("=" * 70)
+
+    # from sklearn.metrics import roc_curve, auc, roc_auc_score
+    # import matplotlib.colors as mcolors
+
+    # htag_labels = all_labels.reshape(-1)
+    # htag_scores = all_outputs.reshape(-1)
+    # htag_weights = all_qcd_weights_val.reshape(-1)
+
+    # htag_fpr, htag_tpr, htag_thresholds = roc_curve(
+    #     htag_labels, htag_scores, sample_weight=htag_weights
+    # )
+    # htag_auc = auc(htag_fpr, htag_tpr)
+
+    # fig1, ax1 = plt.subplots(figsize=(9, 7))
+    # ax1.plot(
+    #     htag_fpr,
+    #     htag_tpr,
+    #     color="darkred",
+    #     linewidth=2,
+    #     label=f"ParT H-tag (AUC = {htag_auc:.4f})",
+    # )
+    # ax1.plot([0, 1], [0, 1], "k--", alpha=0.3)
+    # ax1.set_xlabel("False Positive Rate (QCD mistag)")
+    # ax1.set_ylabel("True Positive Rate (H-tag efficiency)")
+    # ax1.set_title("H-Tagging ROC Curve")
+    # ax1.legend(loc="lower right")
+    # ax1.grid(True, alpha=0.3)
+    # ax1.set_xlim(0, 1)
+    # ax1.set_ylim(0, 1.05)
+    # plt.tight_layout()
+    # save_fig(fig1, "htag_roc_linear")
+    # plt.close(fig1)
+
+    # fig2, ax2 = plt.subplots(figsize=(9, 7))
+    # valid_fpr = htag_fpr > 0
+    # ax2.plot(
+    #     htag_fpr[valid_fpr],
+    #     htag_tpr[valid_fpr],
+    #     color="darkred",
+    #     linewidth=2,
+    #     label=f"ParT H-tag (AUC = {htag_auc:.4f})",
+    # )
+    # ax2.set_xlabel("Mistag Rate")
+    # ax2.set_ylabel("H-Tagging Efficiency")
+    # ax2.set_xscale("log")
+    # ax2.set_xlim(1e-4, 1.0)
+    # ax2.set_ylim(1e-4, 1.05)
+    # ax2.set_title("H-Tagging ROC Curve")
+    # ax2.legend(loc="lower right")
+    # ax2.grid(True, alpha=0.3, which="both")
+    # plt.tight_layout()
+    # save_fig(fig2, "htag_roc_log")
+    # plt.close(fig2)
+
+    # def get_htag_wp(fpr_arr, tpr_arr, thresh_arr, target_mistag):
+    #     idx = np.argmin(np.abs(fpr_arr - target_mistag))
+    #     return fpr_arr[idx], tpr_arr[idx], thresh_arr[idx]
+
+    # htag_wps = []
+    # print(f"\nParT H-Tag Working Points (AUC = {htag_auc:.5f}):")
+    # for wp_name, target in [("Tight", 0.001), ("Medium", 0.01), ("Loose", 0.1)]:
+    #     fpr_wp, tpr_wp, thresh_wp = get_htag_wp(htag_fpr, htag_tpr, htag_thresholds, target)
+    #     print(
+    #         f"  {wp_name}: TPR={tpr_wp*100:.2f}%, FPR={fpr_wp:.4f}, "
+    #         f"1/FPR={1/max(fpr_wp,1e-9):.1f}, thresh={thresh_wp:.4f}"
+    #     )
+    #     htag_wps.append(thresh_wp)
+
+    # htag_pt = val_jet_pt
+    # htag_eta = val_jet_eta
+    # pt_ranges_hm = [
+    #     (25, 100),
+    #     (100, 200),
+    #     (200, 300),
+    #     (300, 400),
+    #     (400, 500),
+    #     (500, np.inf),
+    #     (25, np.inf),
+    # ]
+    # eta_ranges_hm = [(0, 0.5), (0.5, 1.0), (1.0, 1.5), (1.5, 2.4), (0, 1.5), (0, 2.4)]
+
+    # n_pt = len(pt_ranges_hm)
+    # n_eta = len(eta_ranges_hm)
+    # auc_grid = np.full((n_pt, n_eta), np.nan)
+    # count_grid = np.zeros((n_pt, n_eta), dtype=int)
+
+    # for i_pt_hm, (pt_low, pt_high) in enumerate(pt_ranges_hm):
+    #     for j_eta_hm, (eta_low, eta_high) in enumerate(eta_ranges_hm):
+    #         mask_bin = (
+    #             (htag_pt >= pt_low)
+    #             & (htag_pt < pt_high)
+    #             & (np.abs(htag_eta) >= eta_low)
+    #             & (np.abs(htag_eta) < eta_high)
+    #         )
+    #         bin_y = htag_labels[mask_bin]
+    #         bin_s = htag_scores[mask_bin]
+    #         bin_w = htag_weights[mask_bin]
+    #         count_grid[i_pt_hm, j_eta_hm] = len(bin_y)
+
+    #         if len(np.unique(bin_y)) < 2 or len(bin_y) < 20:
+    #             continue
+    #         try:
+    #             auc_grid[i_pt_hm, j_eta_hm] = roc_auc_score(bin_y, bin_s, sample_weight=bin_w)
+    #         except ValueError:
+    #             continue
+
+    # pt_labels_hm = [f"[{low},{high})" for low, high in pt_ranges_hm]
+    # eta_labels_hm = [f"[{low},{high})" for low, high in eta_ranges_hm]
+
+    # fig3, ax3 = plt.subplots(figsize=(9, 7))
+    # im_auc = ax3.imshow(auc_grid, aspect="auto", origin="lower", vmin=0.5, vmax=1.0)
+    # for i_pt_hm in range(n_pt):
+    #     for j_eta_hm in range(n_eta):
+    #         v = auc_grid[i_pt_hm, j_eta_hm]
+    #         txt = f"{v:.3f}" if not np.isnan(v) else "-"
+    #         ax3.text(j_eta_hm, i_pt_hm, txt, ha="center", va="center", fontsize=10)
+    # ax3.set_xticks(range(n_eta))
+    # ax3.set_xticklabels(eta_labels_hm, rotation=30, fontsize=10)
+    # ax3.set_yticks(range(n_pt))
+    # ax3.set_yticklabels(pt_labels_hm, fontsize=10)
+    # ax3.set_xlabel(r"$|\eta|$ bin")
+    # ax3.set_ylabel(r"$p_T$ bin [GeV]")
+    # ax3.set_title("H-Tag AUC per (pT, |eta|) bin")
+    # plt.colorbar(im_auc, ax=ax3, label="AUC")
+    # plt.tight_layout()
+    # save_fig(fig3, "htag_auc_heatmap")
+    # plt.close(fig3)
+
+    # fig4, ax4 = plt.subplots(figsize=(9, 7))
+    # positive_counts = count_grid[count_grid > 0]
+    # vmin_counts = max(1, positive_counts.min()) if positive_counts.size > 0 else 1
+    # vmax_counts = max(1, count_grid.max())
+    # im_cnt = ax4.imshow(
+    #     count_grid,
+    #     aspect="auto",
+    #     origin="lower",
+    #     norm=mcolors.LogNorm(vmin=vmin_counts, vmax=vmax_counts),
+    # )
+    # for i_pt_hm in range(n_pt):
+    #     for j_eta_hm in range(n_eta):
+    #         ax4.text(j_eta_hm, i_pt_hm, f"{count_grid[i_pt_hm, j_eta_hm]:,}", ha="center", va="center", fontsize=10, color="white")
+    # ax4.set_xticks(range(n_eta))
+    # ax4.set_xticklabels(eta_labels_hm, rotation=30, fontsize=10)
+    # ax4.set_yticks(range(n_pt))
+    # ax4.set_yticklabels(pt_labels_hm, fontsize=10)
+    # ax4.set_xlabel(r"$|\eta|$ bin")
+    # ax4.set_ylabel(r"$p_T$ bin [GeV]")
+    # ax4.set_title("Jet count per bin (signal + background)")
+    # plt.colorbar(im_cnt, ax=ax4, label="Count")
+    # plt.tight_layout()
+    # save_fig(fig4, "htag_count_heatmap")
+    # plt.close(fig4)
+
+    # wp_names = ["Tight", "Medium", "Loose"]
+    # for wp_idx, wp_name in enumerate(wp_names):
+    #     fig_eff, ax_eff = plt.subplots(figsize=(9, 7))
+    #     thresh = htag_wps[wp_idx]
+    #     eff_grid = np.full((n_pt, n_eta), np.nan)
+    #     rej_grid = np.full((n_pt, n_eta), np.nan)
+
+    #     for i_pt_hm, (pt_low, pt_high) in enumerate(pt_ranges_hm):
+    #         for j_eta_hm, (eta_low, eta_high) in enumerate(eta_ranges_hm):
+    #             mask_bin = (
+    #                 (htag_pt >= pt_low)
+    #                 & (htag_pt < pt_high)
+    #                 & (np.abs(htag_eta) >= eta_low)
+    #                 & (np.abs(htag_eta) < eta_high)
+    #             )
+    #             bin_y = htag_labels[mask_bin]
+    #             bin_s = htag_scores[mask_bin]
+    #             bin_w = htag_weights[mask_bin]
+
+    #             sig_mask_bin = bin_y == 1
+    #             bkg_mask_bin = bin_y == 0
+    #             if sig_mask_bin.sum() > 0:
+    #                 eff_grid[i_pt_hm, j_eta_hm] = np.mean(bin_s[sig_mask_bin] >= thresh)
+    #             if bkg_mask_bin.sum() > 0:
+    #                 bkg_pass = np.sum(bin_w[bkg_mask_bin] * (bin_s[bkg_mask_bin] >= thresh))
+    #                 bkg_total = np.sum(bin_w[bkg_mask_bin])
+    #                 bkg_eff = bkg_pass / bkg_total if bkg_total > 0 else 0.0
+    #                 rej_grid[i_pt_hm, j_eta_hm] = 1.0 / bkg_eff if bkg_eff > 0 else np.inf
+
+    #     im_eff = ax_eff.imshow(eff_grid, aspect="auto", origin="lower", vmin=0, vmax=1)
+    #     for i_pt_hm in range(n_pt):
+    #         for j_eta_hm in range(n_eta):
+    #             vv = eff_grid[i_pt_hm, j_eta_hm]
+    #             if np.isnan(vv):
+    #                 txt = "-"
+    #             else:
+    #                 rej = rej_grid[i_pt_hm, j_eta_hm]
+    #                 rej_txt = f"\n1/FPR={rej:.0f}" if np.isfinite(rej) and rej < 1e6 else ""
+    #                 txt = f"{vv:.2f}{rej_txt}"
+    #             ax_eff.text(j_eta_hm, i_pt_hm, txt, ha="center", va="center", fontsize=9, color="white")
+
+    #     ax_eff.set_xticks(range(n_eta))
+    #     ax_eff.set_xticklabels(eta_labels_hm, rotation=30, fontsize=10)
+    #     ax_eff.set_yticks(range(n_pt))
+    #     ax_eff.set_yticklabels(pt_labels_hm, fontsize=10)
+    #     ax_eff.set_xlabel(r"$|\eta|$ bin")
+    #     ax_eff.set_ylabel(r"$p_T$ bin [GeV]")
+    #     ax_eff.set_title(f"H-Tag Signal Efficiency - {wp_name} (thresh={thresh:.4f})")
+    #     plt.colorbar(im_eff, ax=ax_eff, label="Signal Efficiency")
+    #     plt.tight_layout()
+    #     save_fig(fig_eff, f"htag_efficiency_heatmap_{wp_name}")
+    #     plt.close(fig_eff)
+
+    # # AK8 H-tag di-Higgs reconstruction
+    # import fastjet
+    # from data_pipeline.make_particle_dataset import cluster_candidates
+    # from data_pipeline.root_loading import (
+    #     load_and_prepare_data,
+    #     select_gen_higgs,
+    #     one_hot_encode_l1_puppi,
+    # )
+    # from evaluation.dihiggs import compute_significance_at_luminosity
+    # from evaluation.luminosity import signal_weight, scale_qcd_weights_raw
+
+    # apply_pt_correction_htag = True
+    # HTAG_WP_SELECTION = "medium"
+    # htag_wp_index = {"tight": 0, "medium": 1, "loose": 2}[HTAG_WP_SELECTION]
+    # HTAG_THRESHOLD = htag_wps[htag_wp_index]
+    # AK8_DIST_PARAM = 0.8
+    # N_CONSTITUENTS_AK8 = n_constituents_model if n_constituents_model is not None else 128
+
+    # dataset_used_htag = config_part.get("training", {}).get("data", {}).get("use_dataset", "pf")
+    # if dataset_used_htag == "pf":
+    #     collection_key_htag = "l1extpf"
+    # elif dataset_used_htag == "puppi":
+    #     collection_key_htag = "l1extpuppi"
+    # else:
+    #     collection_key_htag = "l1barrelextpf"
+    # collection_name_htag = config[collection_key_htag]["collection_name"]
+
+    # print("\n" + "=" * 60)
+    # print("Processing AK8 H-tag di-Higgs reconstruction...")
+    # print("=" * 60)
+
+    # def cluster_and_score_ak8(
+    #     events,
+    #     cfg,
+    #     collection_key,
+    #     model,
+    #     device,
+    #     config_part,
+    #     n_constituents,
+    #     apply_pt_correction=True,
+    # ):
+    #     clustered_jets = cluster_candidates(events, cfg, collection_key, dist_param=AK8_DIST_PARAM)
+    #     sorted_indices = ak.argsort(clustered_jets.pt, axis=1, ascending=False)
+    #     l1_clustered = clustered_jets[sorted_indices]
+    #     matched_cands = l1_clustered.constituents
+    #     const_pt_sort = ak.argsort(matched_cands.pt, axis=2, ascending=False)
+    #     matched_cands = matched_cands[const_pt_sort]
+
+    #     j_pt = l1_clustered.pt[:, :, None]
+    #     j_eta = l1_clustered.eta[:, :, None]
+    #     j_phi = l1_clustered.phi[:, :, None]
+
+    #     m_pt = matched_cands.vector.pt
+    #     m_eta = matched_cands.vector.eta
+    #     m_phi = matched_cands.vector.phi
+    #     m_mass = matched_cands.vector.mass
+    #     m_dxy = matched_cands.dxy
+    #     m_z0 = matched_cands.z0
+    #     m_charge = matched_cands.charge
+    #     m_w = matched_cands.puppiWeight
+    #     m_id = matched_cands.id
+
+    #     log_pt_rel = np.log(np.maximum(m_pt, 1e-3) / np.maximum(j_pt, 1e-3))
+    #     deta = m_eta - j_eta
+    #     dphi = m_phi - j_phi
+    #     dphi = (dphi + np.pi) % (2 * np.pi) - np.pi
+    #     log_dr = np.log(np.maximum(np.sqrt(deta**2 + dphi**2), 1e-3))
+
+    #     def pad_and_fill(arr, target=n_constituents):
+    #         return ak.fill_none(ak.pad_none(arr, target, axis=2, clip=True), 0.0)
+
+    #     feature_list = [
+    #         pad_and_fill(m_mass),
+    #         pad_and_fill(m_pt),
+    #         pad_and_fill(m_eta),
+    #         pad_and_fill(m_phi),
+    #         pad_and_fill(m_dxy),
+    #         pad_and_fill(m_z0),
+    #         pad_and_fill(m_charge),
+    #         pad_and_fill(log_pt_rel),
+    #         pad_and_fill(deta),
+    #         pad_and_fill(dphi),
+    #         pad_and_fill(m_w),
+    #         pad_and_fill(log_dr),
+    #         pad_and_fill(m_id),
+    #     ]
+
+    #     n_jets_per_event = ak.num(l1_clustered, axis=1)
+    #     n_actual_constituents = ak.num(matched_cands, axis=2)
+    #     n_actual_flat = ak.to_numpy(ak.flatten(n_actual_constituents, axis=1))
+
+    #     x_ini = np.stack([ak.to_numpy(ak.flatten(f, axis=1)) for f in feature_list], axis=-1)
+    #     flat_ids = x_ini[..., -1]
+    #     one_hot_ids = one_hot_encode_l1_puppi(flat_ids, n_classes=5)
+    #     X_feat = np.concatenate([x_ini[..., :-1], one_hot_ids], axis=-1)
+
+    #     particle_mask = np.zeros((X_feat.shape[0], n_constituents), dtype=bool)
+    #     for i_evt in range(X_feat.shape[0]):
+    #         n_real = min(n_actual_flat[i_evt], n_constituents)
+    #         particle_mask[i_evt, :n_real] = True
+
+    #     const_vecs = vector.array(
+    #         {
+    #             "pt": x_ini[:, :, 1],
+    #             "eta": x_ini[:, :, 2],
+    #             "phi": x_ini[:, :, 3],
+    #             "mass": x_ini[:, :, 0],
+    #         }
+    #     )
+    #     jet_4v = const_vecs.sum(axis=1)
+    #     flat_jet_pt = np.array(jet_4v.pt)
+    #     flat_jet_eta = np.array(jet_4v.eta)
+    #     flat_jet_phi = np.array(jet_4v.phi)
+    #     flat_jet_mass = np.array(jet_4v.mass)
+
+    #     batch_size = config_part.get("training", {}).get("batch_size", 512)
+    #     all_scores, all_reg = [], []
+    #     model.eval()
+    #     with torch.no_grad():
+    #         for start in range(0, len(X_feat), batch_size):
+    #             end = min(start + batch_size, len(X_feat))
+    #             xb = torch.tensor(X_feat[start:end], dtype=torch.float32).to(device)
+    #             mb = torch.tensor(particle_mask[start:end], dtype=torch.bool).to(device)
+    #             out = model(xb, particle_mask=mb)
+    #             scores = torch.nn.functional.sigmoid(out["classification"]).squeeze().cpu().numpy()
+    #             all_scores.append(scores)
+    #             if "pt" in out:
+    #                 all_reg.append(out["pt"].squeeze().cpu().numpy())
+    #             del xb, mb, out
+
+    #     all_scores = np.concatenate(all_scores)
+    #     has_reg = len(all_reg) > 0
+    #     all_reg = np.concatenate(all_reg) if has_reg else None
+
+    #     corrected_pt = flat_jet_pt * all_reg if (has_reg and apply_pt_correction) else flat_jet_pt
+    #     corr_vecs = vector.array(
+    #         {
+    #             "pt": corrected_pt,
+    #             "eta": flat_jet_eta,
+    #             "phi": flat_jet_phi,
+    #             "mass": flat_jet_mass * (corrected_pt / (flat_jet_pt + 1e-9)),
+    #         }
+    #     )
+
+    #     n_jets_np = ak.to_numpy(n_jets_per_event)
+    #     cumulative = np.concatenate([[0], np.cumsum(n_jets_np)])
+    #     evt_pts, evt_etas, evt_phis, evt_masses, evt_scores = [], [], [], [], []
+    #     for i_evt in range(len(n_jets_np)):
+    #         s, e = cumulative[i_evt], cumulative[i_evt + 1]
+    #         evt_pts.append(corr_vecs.pt[s:e])
+    #         evt_etas.append(corr_vecs.eta[s:e])
+    #         evt_phis.append(corr_vecs.phi[s:e])
+    #         evt_masses.append(corr_vecs.mass[s:e])
+    #         evt_scores.append(all_scores[s:e])
+
+    #     scored_jets = ak.zip(
+    #         {
+    #             "pt": ak.Array(evt_pts),
+    #             "eta": ak.Array(evt_etas),
+    #             "phi": ak.Array(evt_phis),
+    #             "mass": ak.Array(evt_masses),
+    #             "htag_score": ak.Array(evt_scores),
+    #         }
+    #     )
+    #     scored_jets["vector"] = ak.zip(
+    #         {
+    #             "pt": scored_jets.pt,
+    #             "eta": scored_jets.eta,
+    #             "phi": scored_jets.phi,
+    #             "mass": scored_jets.mass,
+    #         },
+    #         with_name="Momentum4D",
+    #     )
+    #     flush_memory()
+    #     return scored_jets, has_reg
+
+    # root_data_pattern = config["file_pattern"]
+    # SIGNAL_CHUNK_SIZE = 20000
+    # max_signal_events = min(config.get("max_events", 200000), 200000)
+
+    # scored_jets_chunks_htag = []
+    # gen_higgs_chunks = []
+    # offset = 0
+    # events_remaining = max_signal_events
+
+    # while events_remaining > 0:
+    #     chunk_size = min(SIGNAL_CHUNK_SIZE, events_remaining)
+    #     chunk_events = load_and_prepare_data(
+    #         root_data_pattern,
+    #         config["tree_name"],
+    #         [collection_name_htag, "GenPart"],
+    #         max_events=chunk_size,
+    #         correct_pt=False,
+    #         CONFIG=config,
+    #         entry_start=offset,
+    #     )
+    #     n_loaded = len(chunk_events)
+    #     if n_loaded == 0:
+    #         break
+    #     events_remaining -= n_loaded
+    #     offset += n_loaded
+
+    #     chunk_scored, has_reg_htag = cluster_and_score_ak8(
+    #         chunk_events,
+    #         config,
+    #         collection_key_htag,
+    #         model,
+    #         device,
+    #         config_part,
+    #         N_CONSTITUENTS_AK8,
+    #         apply_pt_correction_htag,
+    #     )
+    #     scored_jets_chunks_htag.append(chunk_scored)
+    #     gen_higgs_chunks.append(select_gen_higgs(chunk_events))
+    #     del chunk_events, chunk_scored
+    #     flush_memory()
+
+    # if scored_jets_chunks_htag:
+    #     scored_jets_htag = ak.concatenate(scored_jets_chunks_htag)
+    #     gen_higgs_all = ak.concatenate(gen_higgs_chunks)
+    # else:
+    #     scored_jets_htag = ak.Array([])
+    #     gen_higgs_all = ak.Array([])
+
+    # jets_htag_sorted = scored_jets_htag[ak.argsort(scored_jets_htag.htag_score, ascending=False)]
+    # jets_htag_pass = jets_htag_sorted[jets_htag_sorted.htag_score > HTAG_THRESHOLD]
+    # has_2_tagged = ak.num(jets_htag_pass) >= 2
+    # sig_jets_2 = jets_htag_pass[has_2_tagged][:, :2]
+
+    # gen_higgs_for_match = gen_higgs_all[has_2_tagged]
+    # if len(sig_jets_2) > 0:
+    #     dr_reco_h = sig_jets_2[:, :, None].vector.deltaR(gen_higgs_for_match[:, None, :].vector)
+    #     idx_gen_for_reco_h = ak.argmin(dr_reco_h, axis=2)
+    #     min_dr_reco_h = ak.fill_none(ak.min(dr_reco_h, axis=2), np.inf)
+
+    #     dr_gen_h = gen_higgs_for_match[:, :, None].vector.deltaR(sig_jets_2[:, None, :].vector)
+    #     idx_reco_for_gen_h = ak.argmin(dr_gen_h, axis=2)
+    #     back_check_h = idx_reco_for_gen_h[idx_gen_for_reco_h]
+    #     reco_idx_h = ak.local_index(sig_jets_2, axis=1)
+    #     pure_mask_h = (ak.fill_none(back_check_h, -1) == reco_idx_h) & (min_dr_reco_h < AK8_DIST_PARAM)
+    #     signal_mask_evt_htag = ak.sum(pure_mask_h, axis=1) == 2
+    # else:
+    #     signal_mask_evt_htag = ak.Array([])
+
+    # n_signal_htag = int(ak.sum(signal_mask_evt_htag)) if len(signal_mask_evt_htag) > 0 else 0
+    # n_total_htag = int(ak.sum(has_2_tagged)) if len(has_2_tagged) > 0 else 0
+
+    # sig_jets_htag_2 = sig_jets_2[signal_mask_evt_htag][:, :2] if n_signal_htag > 0 else ak.Array([])
+    # if n_signal_htag > 0:
+    #     h1_vec = sig_jets_htag_2[:, 0].vector
+    #     h2_vec = sig_jets_htag_2[:, 1].vector
+    #     is_lead = h1_vec.pt >= h2_vec.pt
+    #     sig_lead_htag = ak.where(is_lead, h1_vec, h2_vec)
+    #     sig_sub_htag = ak.where(is_lead, h2_vec, h1_vec)
+    #     sig_hh_htag = h1_vec + h2_vec
+    # else:
+    #     sig_lead_htag = sig_sub_htag = sig_hh_htag = ak.Array([])
+
+    # QCD_CHUNK_SIZE_HTAG = 5000
+    # qcd_config_htag = config["QCD_background"]
+    # all_qcd_lead_htag, all_qcd_sub_htag, all_qcd_hh_htag = [], [], []
+    # all_qcd_weights_htag_list = []
+    # n_qcd_total_htag = 0
+    # n_qcd_events_processed_htag = 0
+
+    # for bin_name, bin_cfg in qcd_config_htag.items():
+    #     qcd_file_pattern = bin_cfg["file_pattern"]
+    #     max_events_bin = min(bin_cfg.get("max_events", 20000), 20000)
+    #     qcd_cfg_htag = dict(config)
+    #     qcd_cfg_htag["file_pattern"] = qcd_file_pattern
+    #     qcd_cfg_htag["tree_name"] = bin_cfg["tree_name"]
+
+    #     offset = 0
+    #     events_remaining = max_events_bin
+    #     while events_remaining > 0:
+    #         chunk_size = min(QCD_CHUNK_SIZE_HTAG, events_remaining)
+    #         qcd_events = load_and_prepare_data(
+    #             qcd_file_pattern,
+    #             bin_cfg["tree_name"],
+    #             [collection_name_htag],
+    #             max_events=chunk_size,
+    #             correct_pt=False,
+    #             CONFIG=qcd_cfg_htag,
+    #             entry_start=offset,
+    #         )
+    #         n_loaded = len(qcd_events)
+    #         if n_loaded == 0:
+    #             break
+    #         n_qcd_events_processed_htag += n_loaded
+    #         events_remaining -= n_loaded
+    #         offset += n_loaded
+
+    #         qcd_scored_htag, _ = cluster_and_score_ak8(
+    #             qcd_events,
+    #             qcd_cfg_htag,
+    #             collection_key_htag,
+    #             model,
+    #             device,
+    #             config_part,
+    #             N_CONSTITUENTS_AK8,
+    #             apply_pt_correction_htag,
+    #         )
+    #         qcd_htag_sorted = qcd_scored_htag[ak.argsort(qcd_scored_htag.htag_score, ascending=False)]
+    #         qcd_htag_pass = qcd_htag_sorted[qcd_htag_sorted.htag_score > HTAG_THRESHOLD]
+    #         has_2_tagged_qcd = ak.num(qcd_htag_pass) >= 2
+    #         qcd_2jets = qcd_htag_pass[has_2_tagged_qcd][:, :2]
+
+    #         n_events_chunk = int(ak.sum(has_2_tagged_qcd))
+    #         if n_events_chunk > 0:
+    #             q_h1 = qcd_2jets[:, 0].vector
+    #             q_h2 = qcd_2jets[:, 1].vector
+    #             q_is_lead = q_h1.pt >= q_h2.pt
+    #             q_lead = ak.where(q_is_lead, q_h1, q_h2)
+    #             q_sub = ak.where(q_is_lead, q_h2, q_h1)
+    #             q_hh = q_h1 + q_h2
+    #             all_qcd_lead_htag.append(q_lead)
+    #             all_qcd_sub_htag.append(q_sub)
+    #             all_qcd_hh_htag.append(q_hh)
+    #             all_qcd_weights_htag_list.append(np.full(n_events_chunk, bin_cfg["weight"], dtype=np.float64))
+    #             n_qcd_total_htag += n_events_chunk
+
+    #         del qcd_events, qcd_scored_htag, qcd_htag_sorted, qcd_htag_pass, qcd_2jets
+    #         flush_memory()
+
+    # if n_qcd_total_htag > 0:
+    #     qcd_lead_htag = ak.concatenate(all_qcd_lead_htag)
+    #     qcd_sub_htag = ak.concatenate(all_qcd_sub_htag)
+    #     qcd_hh_htag = ak.concatenate(all_qcd_hh_htag)
+    #     qcd_weights_htag = np.concatenate(all_qcd_weights_htag_list)
+    # else:
+    #     qcd_lead_htag = qcd_sub_htag = qcd_hh_htag = ak.Array([])
+    #     qcd_weights_htag = np.array([], dtype=np.float64)
+
+    # sigma_to_ngen_htag = {bin_cfg["weight"]: bin_cfg["n_gen"] for bin_cfg in qcd_config_htag.values()}
+    # htag_dihiggs_result = {
+    #     "label": f"ParT H-Tag ({HTAG_WP_SELECTION})",
+    #     "n_total": n_total_htag,
+    #     "n_signal": n_signal_htag,
+    #     "n_qcd": n_qcd_total_htag,
+    #     "sig_lead": sig_lead_htag,
+    #     "sig_sub": sig_sub_htag,
+    #     "sig_hh": sig_hh_htag,
+    #     "qcd_lead": qcd_lead_htag,
+    #     "qcd_sub": qcd_sub_htag,
+    #     "qcd_hh": qcd_hh_htag,
+    #     "qcd_weights": qcd_weights_htag,
+    #     "sigma_to_ngen": sigma_to_ngen_htag,
+    #     "collection_key": collection_key_htag,
+    #     "wp": HTAG_WP_SELECTION,
+    #     "threshold": HTAG_THRESHOLD,
+    #     "has_regression": has_reg_htag,
+    # }
+
+    # print(
+    #     f"AK8 H-tag reconstruction complete: signal={n_signal_htag}, "
+    #     f"qcd={n_qcd_total_htag}, qcd_processed={n_qcd_events_processed_htag}"
+    # )
+
+    # # AK8 mass plots and significance
+    # res_h = htag_dihiggs_result
+    # label_h = res_h["label"]
+    # color_h = "teal"
+    # qcd_w_h = res_h.get("qcd_weights", np.ones(res_h["n_qcd"]))
+    # sig_window_h = (90, 160)
+    # sig_window_hh = (250, 550)
+    # bins_mh = np.linspace(0, 300, 61)
+    # bins_mhh = np.linspace(200, 800, 61)
+
+    # fig = plt.figure(figsize=(10, 7))
+    # ax = fig.add_subplot(111)
+    # if res_h["n_signal"] > 0:
+    #     ax.hist(ak.to_numpy(res_h["sig_lead"].mass), bins=bins_mh, histtype="stepfilled", alpha=0.3, color=color_h, label=f'Signal ({res_h["n_signal"]})', density=True)
+    #     ax.hist(ak.to_numpy(res_h["sig_lead"].mass), bins=bins_mh, histtype="step", linewidth=2, color=color_h, density=True)
+    # if res_h["n_qcd"] > 0:
+    #     ax.hist(ak.to_numpy(res_h["qcd_lead"].mass), bins=bins_mh, histtype="step", linewidth=2, color="grey", linestyle="--", label=f'QCD ({res_h["n_qcd"]} events)', density=True)
+    # ax.axvline(125, color="green", linestyle=":", linewidth=1.5)
+    # ax.axvspan(*sig_window_h, alpha=0.05, color="green")
+    # ax.set_xlabel("Leading $m_H$ [GeV]")
+    # ax.set_ylabel("Density")
+    # ax.set_title(f"{label_h} - Leading Higgs (AK8)")
+    # ax.legend(fontsize=10)
+    # plt.tight_layout()
+    # save_fig(fig, "htag_dihiggs_mass_leading_full")
+    # plt.close(fig)
+
+    # fig = plt.figure(figsize=(10, 7))
+    # ax = fig.add_subplot(111)
+    # if res_h["n_signal"] > 0:
+    #     ax.hist(ak.to_numpy(res_h["sig_sub"].mass), bins=bins_mh, histtype="stepfilled", alpha=0.3, color=color_h, label="Signal", density=True)
+    #     ax.hist(ak.to_numpy(res_h["sig_sub"].mass), bins=bins_mh, histtype="step", linewidth=2, color=color_h, density=True)
+    # if res_h["n_qcd"] > 0:
+    #     ax.hist(ak.to_numpy(res_h["qcd_sub"].mass), bins=bins_mh, histtype="step", linewidth=2, color="grey", linestyle="--", label="QCD", density=True)
+    # ax.axvline(125, color="green", linestyle=":", linewidth=1.5)
+    # ax.axvspan(*sig_window_h, alpha=0.05, color="green")
+    # ax.set_xlabel("Subleading $m_H$ [GeV]")
+    # ax.set_ylabel("Density")
+    # ax.set_title(f"{label_h} - Subleading Higgs (AK8)")
+    # ax.legend(fontsize=10)
+    # plt.tight_layout()
+    # save_fig(fig, "htag_dihiggs_mass_subleading_full")
+    # plt.close(fig)
+
+    # fig = plt.figure(figsize=(10, 7))
+    # ax = fig.add_subplot(111)
+    # if res_h["n_signal"] > 0:
+    #     ax.hist(ak.to_numpy(res_h["sig_hh"].mass), bins=bins_mhh, histtype="stepfilled", alpha=0.3, color=color_h, label="Signal", density=True)
+    #     ax.hist(ak.to_numpy(res_h["sig_hh"].mass), bins=bins_mhh, histtype="step", linewidth=2, color=color_h, density=True)
+    # if res_h["n_qcd"] > 0:
+    #     ax.hist(ak.to_numpy(res_h["qcd_hh"].mass), bins=bins_mhh, histtype="step", linewidth=2, color="grey", linestyle="--", label="QCD", density=True)
+    # ax.axvspan(*sig_window_hh, alpha=0.05, color="green")
+    # ax.set_xlabel("$m_{HH}$ [GeV]")
+    # ax.set_ylabel("Density")
+    # ax.set_title(f"{label_h} - Di-Higgs Mass (AK8)")
+    # ax.legend(fontsize=10)
+    # plt.tight_layout()
+    # save_fig(fig, "htag_dihiggs_mass_mhh_full")
+    # plt.close(fig)
+
+    # if res_h["n_signal"] > 0 and res_h["n_qcd"] > 0:
+    #     sig_mh1_h = ak.to_numpy(res_h["sig_lead"].mass)
+    #     sig_mh2_h = ak.to_numpy(res_h["sig_sub"].mass)
+    #     bkg_mh1_h = ak.to_numpy(res_h["qcd_lead"].mass)
+    #     bkg_mh2_h = ak.to_numpy(res_h["qcd_sub"].mass)
+    #     result_mhh_h = compute_significance_at_luminosity(
+    #         sig_mh1_h,
+    #         sig_mh2_h,
+    #         bkg_mh1_h,
+    #         bkg_mh2_h,
+    #         bkg_raw_weights=qcd_w_h,
+    #         sigma_to_ngen=sigma_to_ngen_htag,
+    #         n_gen_signal=N_GEN_SIGNAL,
+    #         luminosity_fb=LUMINOSITY_FB,
+    #         signal_xsec_pb=SIGNAL_XSEC_PB,
+    #         region="rectangular",
+    #         rect_window=sig_window_hh,
+    #     )
+    #     print(
+    #         f"AK8 mHH-window significance: S={result_mhh_h['S']:.1f}, "
+    #         f"B={result_mhh_h['B']:.3e}, Z={result_mhh_h['significance']:.4f}"
+    #     )
+
+    # # r_HH AK8 region diagnostics
+    # if res_h["n_signal"] > 0 and res_h["n_qcd"] > 0:
+    #     MH_CENTER = 125.0
+    #     R_HH_CUT_HTAG = 30.0
+
+    #     sig_lead_m = ak.to_numpy(res_h["sig_lead"].mass)
+    #     sig_sub_m = ak.to_numpy(res_h["sig_sub"].mass)
+    #     sig_hh_m = ak.to_numpy(res_h["sig_hh"].mass)
+    #     bkg_lead_m = ak.to_numpy(res_h["qcd_lead"].mass)
+    #     bkg_sub_m = ak.to_numpy(res_h["qcd_sub"].mass)
+    #     bkg_hh_m = ak.to_numpy(res_h["qcd_hh"].mass)
+
+    #     sig_rhh = np.sqrt((sig_lead_m - MH_CENTER) ** 2 + (sig_sub_m - MH_CENTER) ** 2)
+    #     bkg_rhh = np.sqrt((bkg_lead_m - MH_CENTER) ** 2 + (bkg_sub_m - MH_CENTER) ** 2)
+    #     sig_mask_rhh = sig_rhh < R_HH_CUT_HTAG
+    #     bkg_mask_rhh = bkg_rhh < R_HH_CUT_HTAG
+    #     sig_mask_mhh = (sig_hh_m >= sig_window_hh[0]) & (sig_hh_m <= sig_window_hh[1])
+    #     bkg_mask_mhh = (bkg_hh_m >= sig_window_hh[0]) & (bkg_hh_m <= sig_window_hh[1])
+
+    #     result_rhh_h = compute_significance_at_luminosity(
+    #         sig_lead_m,
+    #         sig_sub_m,
+    #         bkg_lead_m,
+    #         bkg_sub_m,
+    #         bkg_raw_weights=qcd_w_h,
+    #         sigma_to_ngen=sigma_to_ngen_htag,
+    #         n_gen_signal=N_GEN_SIGNAL,
+    #         luminosity_fb=LUMINOSITY_FB,
+    #         signal_xsec_pb=SIGNAL_XSEC_PB,
+    #         region="circular",
+    #         r_hh_cut=R_HH_CUT_HTAG,
+    #     )
+
+    #     _sw_h = signal_weight(len(sig_lead_m), LUMINOSITY_FB, SIGNAL_XSEC_PB, N_GEN_SIGNAL)
+    #     _bw_h = scale_qcd_weights_raw(qcd_w_h, sigma_to_ngen_htag, LUMINOSITY_FB)
+    #     S_comb = float(np.sum(_sw_h[sig_mask_rhh & sig_mask_mhh]))
+    #     B_comb = float(np.sum(_bw_h[bkg_mask_rhh & bkg_mask_mhh]))
+    #     Z_comb = S_comb / np.sqrt(S_comb + B_comb) if (S_comb + B_comb) > 0 else 0.0
+
+    #     fig = plt.figure(figsize=(9, 8))
+    #     ax = fig.add_subplot(111)
+    #     ax.scatter(bkg_lead_m, bkg_sub_m, s=2, alpha=0.20, color="grey", label="QCD")
+    #     ax.scatter(sig_lead_m, sig_sub_m, s=3, alpha=0.35, color="teal", label="Signal")
+    #     ax.axvline(MH_CENTER, color="green", linestyle=":", alpha=0.6)
+    #     ax.axhline(MH_CENTER, color="green", linestyle=":", alpha=0.6)
+    #     circle = plt.Circle((MH_CENTER, MH_CENTER), R_HH_CUT_HTAG, fill=False, color="crimson", lw=2, label=f"r_HH < {R_HH_CUT_HTAG:g}")
+    #     ax.add_patch(circle)
+    #     ax.set_xlabel("Leading $m_H$ [GeV]")
+    #     ax.set_ylabel("Subleading $m_H$ [GeV]")
+    #     ax.set_title(f"{label_h} - AK8 $m_{{H_1}}$ vs $m_{{H_2}}$ with $r_{{HH}}$ SR")
+    #     ax.set_xlim(0, 300)
+    #     ax.set_ylim(0, 300)
+    #     ax.legend(fontsize=10, loc="upper right")
+    #     plt.tight_layout()
+    #     save_fig(fig, "htag_dihiggs_rhh_signal_region_scatter")
+    #     plt.close(fig)
+
+    #     fig = plt.figure(figsize=(10, 7))
+    #     ax = fig.add_subplot(111)
+    #     bins_rhh = np.linspace(0, 200, 81)
+    #     ax.hist(sig_rhh, bins=bins_rhh, histtype="stepfilled", alpha=0.25, color="teal", density=True, label="Signal")
+    #     ax.hist(sig_rhh, bins=bins_rhh, histtype="step", linewidth=2, color="teal", density=True)
+    #     ax.hist(bkg_rhh, bins=bins_rhh, weights=qcd_w_h, histtype="step", linewidth=2, color="grey", linestyle="--", density=True, label="QCD (weighted)")
+    #     ax.axvline(R_HH_CUT_HTAG, color="crimson", linestyle="-", linewidth=2, label=f"$r_{{HH}}$ cut = {R_HH_CUT_HTAG:g}")
+    #     ax.set_xlabel(r"$r_{HH}$ [GeV]")
+    #     ax.set_ylabel("Density")
+    #     ax.set_title(f"{label_h} - $r_{{HH}}$ distribution (AK8)")
+    #     ax.legend(fontsize=10)
+    #     plt.tight_layout()
+    #     save_fig(fig, "htag_dihiggs_rhh_distribution")
+    #     plt.close(fig)
+
+    #     print(
+    #         f"AK8 r_HH significance: S={result_rhh_h['S']:.1f}, B={result_rhh_h['B']:.3e}, "
+    #         f"Z={result_rhh_h['significance']:.4f}; combined(r_HH+mHH): Z={Z_comb:.4f}"
+    #     )
+
+    # print("\nAll analysis complete!")
 
 
 if __name__ == "__main__":
