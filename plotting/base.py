@@ -50,13 +50,20 @@ def plot_kinematic_comparison(
     fmt="o-",
     new_fig=True,
     legend_postfix="",
+    ax=None,
 ):
     """
     Plots efficiency or purity vs. a kinematic variable for objects input.
     Objects is a list of tuples: [(label, object_collection, mask)]
     """
-    if new_fig:
+    if new_fig and ax is not None:
         plt.figure(figsize=(10, 6))
+
+    if ax is not None:
+        plt.sca(ax)
+    else:
+        plt.figure(figsize=(10, 6))
+        ax = plt.gca()
 
     bin_centers = 0.5 * (bins[1:] + bins[:-1])
 
@@ -70,19 +77,19 @@ def plot_kinematic_comparison(
             bins,
             is_purity_plot=is_purity_plot,
         )
-        plt.errorbar(
+        ax.errorbar(
             bin_centers,
             y_values,
             yerr=y_errors,
             fmt=fmt,
             label=f"{obj_label}{legend_postfix}",
         )
-    plt.xlabel(xlabel)
-    plt.ylabel("Purity" if is_purity_plot else "Efficiency")
-    plt.title(title)
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.ylim(0, 1.05)
-    plt.legend()
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Purity" if is_purity_plot else "Efficiency")
+    ax.set_title(title)
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.set_ylim(0, 1.05)
+    ax.legend()
     if new_fig:
         plt.show()
 
@@ -308,9 +315,9 @@ def plot_matching_criteria(gen_particles, reco_objects, CONFIG=None):
         label=f'Matching Cut (ΔR={CONFIG["matching_cone_size"]})',
     )
 
-    plt.xlabel("ΔR (gen b-quark, closest reco jet)")
-    plt.ylabel(r"p$_T$ Response (reco p$_T$ / gen p$_T$)")
-    plt.title("p$_T$ Response vs. ΔR for b-quark to Jet Matching")
+    plt.xlabel(r"ΔR ($Gen$ $b$ quark, Closest Reco Jet)")
+    plt.ylabel(r"$p_T$ Response (Reco $p_T$ / $Gen$ $p_T$)")
+    # plt.title("p$_T$ Response vs. ΔR for b-quark to Jet Matching")
     plt.legend()
 
     # Add a color bar
