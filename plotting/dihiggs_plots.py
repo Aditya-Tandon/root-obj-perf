@@ -151,7 +151,7 @@ def plot_mass_2d(
             )
         else:
             ax.set_title(f"{label} — {cat}")
-        ax.legend(loc="upper right", fontsize=10)
+        ax.legend(loc="upper right")
 
     fig.suptitle(f"2D $m_{{H1}}$ vs $m_{{H2}}$ — {label}", fontsize=16, y=1.02)
     plt.tight_layout()
